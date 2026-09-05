@@ -2,20 +2,39 @@
 <html lang="zh-cn">
 <head>
   <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline';">
   <title>在线答题卡丨申论格子纸语文作文纸</title>
   <style>
-    /* 新增错误提示样式 */
+    /* ---------- 1. 错误提示（轻量、淡入淡出） ---------- */
     .error-message {
-      color: #d9534f;
-      background-color: #f2dede;
-      border: 1px solid #ebccd1;
-      padding: 10px;
-      border-radius: 4px;
+      color: #b71c1c;
+      background-color: #fff3f3;
+      border-left: 4px solid #c62828;
+      padding: 10px 14px;
+      border-radius: 0 6px 6px 0;
       margin: 10px 0;
       display: none;
+      opacity: 0;
+      transition: opacity 0.3s ease;
+      font-size: 14px;
+      line-height: 1.5;
+      text-align: left;
+      max-width: 600px;
+      margin-left: auto;
+      margin-right: auto;
     }
-    
-    /* 打印页面全局边距，保障打印内容不裁切 */
+    .error-message.show {
+      display: block;
+      opacity: 1;
+    }
+
+    /* ---------- 8. 全局焦点样式 ---------- */
+    *:focus-visible {
+      outline: 2px solid #1976d2;
+      outline-offset: 2px;
+    }
+
+    /* ---------- 打印 ---------- */
     @page { margin: 10mm; }
     body {
       display: flex;
@@ -26,51 +45,92 @@
       margin: 0;
       padding: 20px;
       box-sizing: border-box;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
     }
     .container {
       text-align: center;
       width: 100%;
       margin-top: 10px;
     }
+
+    /* ---------- 5. 字体层级 ---------- */
+    .guide-title {
+      display: block;
+      margin-top: 16px;
+      margin-bottom: 6px;
+      font-size: 20px;
+      font-weight: 600;
+      color: #1a1a1a;
+    }
     .guide {
       display: block;
-      margin-top: 20px;
+      margin-top: 4px;
       margin-bottom: 10px;
-      font-size: 16px;
+      font-size: 14px;
+      color: #555;
+      line-height: 1.5;
     }
+
+    /* 移动端引导提示 */
+    .mobile-hint {
+      display: none;
+      background: #fff8e1;
+      border: 1px solid #ffcc80;
+      border-radius: 6px;
+      padding: 10px 14px;
+      margin: 8px auto;
+      font-size: 13px;
+      color: #e65100;
+      max-width: 600px;
+      text-align: left;
+    }
+
     @media print {
-      /* 打印时隐藏不相关元素 */
-      .guide, .editable-div, .buttons, .adjust-buttons, .error-message {
+      @page { margin: 8mm; }
+
+      .guide-title, .guide, .editable-div, .buttons, .adjust-buttons,
+      .error-message, .mobile-hint, .size-buttons,
+      .count-target-group, .count-annotation {
         display: none !important;
       }
       body {
         width: 100%;
         height: auto;
-        /* 内部增加安全边距，兼容无@page情形 */
-        padding: 10mm;
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
       }
-      .grid-container {
+      .container { margin-top: 0; }
+      .container .grid-container {
         width: 100%;
-        grid-template-columns: repeat(25, 1fr);
+        max-width: 100%;
+        box-sizing: border-box;
+        padding: 0;
+        grid-template-columns: repeat(25, minmax(0, 1fr));
         grid-template-rows: auto;
       }
-      .grid-item {
+      .grid-container .grid-item {
+        box-sizing: border-box;
+        overflow: hidden;
         width: auto;
         height: auto;
         padding: 1px;
         font-size: 17px;
       }
-      .container { margin-top: 0; }
-      
-      /* 修复打印时标注被裁剪问题 */
-  .grid-item:nth-child(100n)::after {
-    right: 0;
-    font-size: 8px; /* 进一步缩小打印字体 */
-    bottom: -10px;
-    transform: translateX(100%);
-    padding-right: 1px;
-    max-width: 18px; /* 更严格的打印限制 */
-  }
+      .grid-container .grid-item:nth-child(100n)::after {
+        right: 0;
+        font-size: 8px;
+        bottom: -10px;
+        transform: translateX(100%);
+        padding-right: 1px;
+        max-width: 18px;
+      }
+    }
+
+    /* ---------- 2. 格子线颜色降饱和 ---------- */
+    :root {
+      --grid-color: #c62828;
+      --content-font-size: 18px;
     }
     .grid-container {
       display: grid;
@@ -79,84 +139,159 @@
       row-gap: 8px;
       justify-content: center;
       margin-top: 20px;
+      transition: box-shadow 0.3s ease;
+      border-radius: 4px;
+      padding: 4px;
+    }
+    /* 3. 输入框 focus 时格子区高亮 */
+    .grid-container.focus-highlight {
+      box-shadow: 0 0 0 3px rgba(25, 118, 210, 0.15);
     }
     .grid-item {
-      border-top: 1px solid red;
-      border-left: 1px solid red;
-      border-bottom: 1px solid red;
+      border-top: 1px solid var(--grid-color);
+      border-left: 1px solid var(--grid-color);
+      border-bottom: 1px solid var(--grid-color);
       padding: 5px;
       text-align: center;
-      font-size: 20px;
+      font-size: calc(var(--content-font-size) + 2px);
       width: 1.1em;
       height: 1.1em;
       display: flex;
       justify-content: center;
       align-items: center;
-      cursor: pointer; /* 添加指针样式 */
+      cursor: pointer;
+      transition: background-color 0.15s ease;
     }
     .grid-item:hover {
-      background-color: #f0f8ff; /* 添加悬停效果 */
+      background-color: #f0f8ff;
     }
-    .grid-item:nth-child(25n) { border-right: 1px solid red; }
+    /* 7. +N+ 空格视觉标记 */
+    .grid-item.space-directive {
+      background-color: #f5f5f5;
+      background-image: repeating-linear-gradient(
+        45deg,
+        transparent,
+        transparent 4px,
+        rgba(198, 40, 40, 0.08) 4px,
+        rgba(198, 40, 40, 0.08) 8px
+      );
+    }
+    .grid-item:nth-child(25n) { border-right: 1px solid var(--grid-color); }
     .grid-item:nth-child(100n) {
-      border-right: 2px solid red;
+      border-right: 2px solid var(--grid-color);
       position: relative;
     }
-/* 修改后（普通模式） */
-.grid-item:nth-child(100n)::after {
-  content: attr(data-index);
-  color: red;
-  font-size: 10px; /* 缩小字体避免溢出 */
-  font-weight: normal;
-  position: absolute;
-  right: 0; /* 对齐格子右边线 */
-  bottom: -12px; /* 下移避免重叠 */
-  transform: translateX(100%); /* 数字整体右移 */
-  padding-right: 2px; /* 添加微调间距 */
-  text-align: right; /* 文本右对齐 */
-  width: max-content; /* 自适应宽度 */
-  max-width: 22px; /* 限制最大宽度 */
-  overflow: hidden; /* 防溢出 */
-}
-    /* 替换textarea为可编辑div */
+    .grid-item:nth-child(100n)::after {
+      content: attr(data-index);
+      color: var(--grid-color);
+      font-size: 10px;
+      font-weight: normal;
+      position: absolute;
+      right: 0;
+      bottom: -12px;
+      transform: translateX(100%);
+      padding-right: 2px;
+      text-align: right;
+      width: max-content;
+      max-width: 22px;
+      overflow: hidden;
+    }
+
+    /* ---------- 3. 输入框 ---------- */
     .editable-div {
       width: 40%;
       height: 250px;
       margin-bottom: 10px;
-      font-size: 18px;
+      font-size: var(--content-font-size);
       border: 1px solid #ccc;
-      padding: 5px;
-      white-space: pre-wrap; /* 保留空白和换行 */
+      padding: 8px 10px;
+      white-space: pre-wrap;
       overflow: auto;
-      text-align: left; /* 确保文本左对齐 */
+      text-align: left;
+      resize: both;
+      border-radius: 4px;
+      transition: border-color 0.2s ease, box-shadow 0.2s ease;
+    }
+    .editable-div:focus {
+      border-color: #1976d2;
+      box-shadow: 0 0 0 3px rgba(25, 118, 210, 0.15);
+      outline: none;
     }
     .editable-div .directive {
-      color: blue; /* +N+指令显示为蓝色 */
+      color: #1565c0;
+      font-weight: 500;
     }
+
+    /* ---------- 1. 按钮三级体系 ---------- */
+    button {
+      border: none;
+      outline: none;
+      font-family: inherit;
+      font-size: 13px;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      border-radius: 4px;
+      padding: 6px 14px;
+      line-height: 1.4;
+    }
+    button:active {
+      transform: translateY(1px);
+    }
+    .btn-primary {
+      background-color: #1976d2;
+      color: #fff;
+      border: 1px solid #1976d2;
+    }
+    .btn-primary:hover {
+      background-color: #1565c0;
+      border-color: #1565c0;
+    }
+    .btn-secondary {
+      background-color: #fff;
+      color: #37474f;
+      border: 1px solid #b0bec5;
+    }
+    .btn-secondary:hover {
+      background-color: #eceff1;
+      border-color: #90a4ae;
+    }
+    .btn-danger {
+      background-color: #fff;
+      color: #c62828;
+      border: 1px solid #ef9a9a;
+    }
+    .btn-danger:hover {
+      background-color: #ffebee;
+      border-color: #ef5350;
+    }
+    .btn-text {
+      background: transparent;
+      color: #546e7a;
+      border: 1px solid transparent;
+      padding: 6px 10px;
+    }
+    .btn-text:hover {
+      background-color: #f5f5f5;
+    }
+
     .buttons {
       margin-top: 10px;
       display: flex;
       justify-content: center;
       align-items: center;
+      flex-wrap: wrap;
+      gap: 8px;
     }
-    .buttons button { margin: 0 7px; }
-    
-    /* 新增：调整导出和导入按钮间距 */
-    .buttons button:nth-child(8) {
-      margin-right: 1px; /* 导出TXT按钮右边距设为1px */
-    }
-    .buttons button:nth-child(9) {
-      margin-left: 1px; /* 导入按钮左边距设为1px */
-    }
-    
+
     .count-display {
       margin-left: 10px;
       font-size: 14px;
-      font-weight: bold;
-      padding: 5px;
-      border: 1px solid #000;
-      border-radius: 5px;
-      background-color: #f0f0f0;
+      font-weight: 600;
+      padding: 6px 10px;
+      border: 1px solid #cfd8dc;
+      border-radius: 4px;
+      background-color: #f5f7fa;
+      color: #37474f;
     }
     .input-container {
       display: flex;
@@ -167,94 +302,128 @@
       display: flex;
       justify-content: center;
       margin-bottom: 10px;
-    }
-    .size-buttons button { margin: 0 5px; }
-    
-    /* 移动端适配 */
-    @media (max-width: 768px) {
-      .editable-div { width: 90%; }
-      .grid-item { font-size: 16px; }
-      .buttons { flex-wrap: wrap; }
-      .buttons button { margin: 5px; }
-      
-      /* 移动端导出和导入按钮间距调整 */
-      .buttons button:nth-child(8) {
-        margin-right: 1px;
-      }
-      .buttons button:nth-child(9) {
-        margin-left: 1px;
-      }
+      gap: 6px;
     }
 
-    .editable-div {
-      width: 40%;
-      height: 250px;
-      margin-bottom: 10px;
-      font-size: 18px;
-      border: 1px solid #ccc;
-      padding: 5px;
-      white-space: pre-wrap; /* 保留空白和换行 */
-      overflow: auto;
-      text-align: left; /* 确保文本左对齐 */
-      resize: both; /* 添加此行以启用拖动调整大小功能 */
-    }
-
-    /* 新增：自动输入按钮样式 */
+    /* 自动输入状态按钮 */
     .auto-on {
-      background-color: #4CAF50; /* 绿色表示开启 */
+      background-color: #2e7d32;
       color: white;
+      border: 1px solid #2e7d32;
     }
+    .auto-on:hover { background-color: #1b5e20; }
     .auto-off {
-      background-color: #f44336; /* 红色表示关闭 */
+      background-color: #c62828;
       color: white;
+      border: 1px solid #c62828;
     }
-    
-    /* 新增：光标高亮样式 */
+    .auto-off:hover { background-color: #b71c1c; }
+
+    /* 光标高亮 */
     .cursor-highlight {
-      background-color: rgba(255, 255, 0, 0.5);
+      background-color: rgba(255, 235, 59, 0.5);
       animation: blink 1s infinite;
     }
-    
     @keyframes blink {
-      50% { background-color: rgba(255, 255, 0, 0.2); }
+      50% { background-color: rgba(255, 235, 59, 0.2); }
     }
+
+    /* ---------- 9. 移动端适配 ---------- */
+    @media (max-width: 768px) {
+      .editable-div { width: 90%; }
+      .grid-item { font-size: calc(var(--content-font-size) - 2px); }
+      .buttons { gap: 6px; }
+      button { padding: 5px 10px; font-size: 12px; }
+      .mobile-hint { display: block; }
+      .grid-container {
+        justify-content: flex-start;
+        overflow-x: auto;
+        min-width: 100%;
+        padding-bottom: 12px;
+      }
+      .guide-title { font-size: 18px; }
+    }
+
+
+
+    /* ---------- Word count target ---------- */
+    .count-target-group {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .count-target-input {
+      width: 70px;
+      padding: 4px 8px;
+      border: 1px solid #cfd8dc;
+      border-radius: 4px;
+      font-size: 13px;
+      text-align: center;
+      font-family: inherit;
+    }
+    .count-display.over-target {
+      color: #c62828;
+      border-color: #ef9a9a;
+      background-color: #ffebee;
+    }
+    .count-annotation {
+      font-size: 12px;
+      color: #78909c;
+      margin-top: 6px;
+      text-align: center;
+    }
+
   </style>
 </head>
 <body>
-  <div class="guide">在线答题卡丨仅用于考试答题模拟，无在线缓存功能，请及时保存</div>
-  <div class="guide">【回车键】换行（自动空2格）、【空格键】空1格、【Tab键】空2格、【+N+】空N格</div>
+  <div class="guide-title">在线答题卡丨申论格子纸语文作文纸</div>
+  <div class="guide" id="guide-desc">仅用于考试答题模拟，内容自动保存至浏览器本地存储，请及时导出备份。<br>【回车键】换行（自动空2格）、【空格键】空1格、【Tab键】空2格、【+N+】空N格</div>
+  <div class="mobile-hint">提示：移动端格子较小，建议横屏使用或切换至桌面端以获得最佳体验。</div>
   <div class="error-message" id="error-message"></div>
   <div class="container">
     <div class="input-container">
       <div class="size-buttons adjust-buttons">
-        <button onclick="resetTextarea()">复原</button>
-        <button onclick="adjustTextarea('wide')">宽</button>
-        <button onclick="adjustTextarea('narrow')">窄</button>
-        <button onclick="adjustTextarea('tall')">高</button>
-        <button onclick="adjustTextarea('short')">低</button>
+        <button class="btn-text" onclick="resetTextarea()">复原</button>
+        <button class="btn-text" onclick="adjustTextarea('wide')">宽</button>
+        <button class="btn-text" onclick="adjustTextarea('narrow')">窄</button>
+        <button class="btn-text" onclick="adjustTextarea('tall')">高</button>
+        <button class="btn-text" onclick="adjustTextarea('short')">低</button>
+        <button class="btn-text" onclick="adjustFontSize(-1)">字小</button>
+        <button class="btn-text" onclick="adjustFontSize(1)">字大</button>
       </div>
-      <!-- 替换textarea为可编辑div -->
-      <div id="input-text" class="editable-div" contenteditable="true" oninput="distributeTextWithDelay()" onkeydown="handleKeyDown(event)"></div>
+      <div id="input-text" class="editable-div" contenteditable="true"
+           oninput="distributeTextWithDelay()" onkeydown="handleKeyDown(event)"
+           aria-label="文本输入区" aria-describedby="guide-desc" role="textbox"></div>
     </div>
     <div class="buttons">
-      <button onclick="clearPlusN()">清除+N+</button>
-      <button onclick="clearNewLines()">清除换行</button>
-      <button onclick="clearSpaces()">清除空格</button>
-      <button onclick="clearInput()">清空</button>
-      <button onclick="undo()">撤销</button>
+      <button class="btn-secondary" onclick="clearPlusN()">清除+N+</button>
+      <button class="btn-secondary" onclick="clearNewLines()">清除换行</button>
+      <button class="btn-secondary" onclick="clearSpaces()">清除空格</button>
+      <button class="btn-danger" onclick="clearInput()">清空</button>
+      <button class="btn-secondary" onclick="undo()">撤销</button>
       <button id="toggle-auto-input" class="auto-on" onclick="toggleAutoInput()">自动输入·开</button>
-      <button onclick="distributeText()">填入答题纸</button>
-      <button onclick="downloadText()">导出TXT</button>
-      <button onclick="importText()">导入</button>
-      <button onclick="window.print()">打印</button>
-      <div class="count-display" id="count-display">统计字数: 0</div>
+      <button class="btn-primary" onclick="distributeText()">填入答题纸</button>
+      <button class="btn-secondary" onclick="downloadText()">导出TXT</button>
+      <button class="btn-secondary" onclick="importText()">导入</button>
+      <button class="btn-secondary" onclick="window.print()">打印</button>
+      <div class="count-target-group">
+        <div class="count-display" id="count-display">表格计数: 0</div>
+        <div style="font-size:13px;color:#78909c;white-space:nowrap;">目标:
+          <input type="number" class="count-target-input" id="count-target" min="0" placeholder="无" onchange="updateCountTarget()" oninput="updateCountTarget()">
+        </div>
+      </div>
     </div>
-    <div class="grid-container" id="grid-container"></div>
+    <div class="grid-container" id="grid-container" role="grid" aria-label="答题格子纸"></div>
+    <div class="count-annotation" id="count-annotation">「表格计数」= 实际占用格子数（含指令空格与合并字符），与纯字符数不同</div>
   </div>
   <script>
     const GRID_COLUMNS_PER_ROW = 25;
+    const MAX_DIRECTIVE_SPACES = 500;
+    const MAX_IMPORT_TEXT_LENGTH = 100000;
     let updateTimeout;
     let autoInputEnabled = true;
+    let errorTimeout;
     const initialWidth = '40%';
     const initialHeight = '250px';
     
@@ -262,15 +431,27 @@
     const undoHistory = [];
     const MAX_UNDO_STEPS = 10;
 
-    // 新增：错误消息显示函数
+    // 新增：错误消息显示函数（淡入淡出）
     function showError(message) {
       const errorElement = document.getElementById('error-message');
+
+      // 清除旧定时器防止泄漏
+      if (errorTimeout) {
+        clearTimeout(errorTimeout);
+      }
+
       errorElement.innerText = message;
-      errorElement.style.display = 'block';
-      
+      errorElement.classList.add('show');
+
       // 5秒后自动隐藏错误信息
-      setTimeout(() => {
-        errorElement.style.display = 'none';
+      errorTimeout = setTimeout(() => {
+        errorElement.classList.remove('show');
+        // 等待 transition 结束后彻底隐藏
+        setTimeout(() => {
+          if (!errorElement.classList.contains('show')) {
+            errorElement.style.display = 'none';
+          }
+        }, 300);
       }, 5000);
     }
 
@@ -337,22 +518,42 @@
       return textNodes;
     }
 
-    // 修改后：高亮指令时保存和恢复光标位置
+    // 修复1+3：高亮指令时不破坏DOM结构，且对文本做实体编码防止XSS
     function highlightDirectives() {
       const inputTextDiv = document.getElementById('input-text');
-      const text = inputTextDiv.innerText;
+      const directiveRegex = /\+\d+\+/;
       
-      // 保存光标位置
-      const caretPos = saveCaretPosition(inputTextDiv);
+      // 遍历所有文本节点，只替换文本内容，不破坏DOM结构
+      const walker = document.createTreeWalker(inputTextDiv, NodeFilter.SHOW_TEXT, null, false);
+      const nodesToReplace = [];
       
-      // 使用正则表达式匹配+N+指令
-      const regex = /(\+\d+\+)/g;
-      const newHTML = text.replace(regex, '<span class="directive">$1</span>');
+      while (walker.nextNode()) {
+        const node = walker.currentNode;
+        if (directiveRegex.test(node.nodeValue)) {
+          nodesToReplace.push(node);
+        }
+      }
       
-      inputTextDiv.innerHTML = newHTML;
-      
-      // 恢复光标位置
-      restoreCaretPosition(inputTextDiv, caretPos);
+      for (const node of nodesToReplace) {
+        const text = node.nodeValue;
+        const parts = text.split(/(\+\d+\+)/);
+        const fragment = document.createDocumentFragment();
+        
+        for (let i = 0; i < parts.length; i++) {
+          if (parts[i]) {
+            if (/^\+\d+\+$/.test(parts[i])) {
+              const span = document.createElement('span');
+              span.className = 'directive';
+              span.textContent = parts[i]; // 使用 textContent 防止 XSS
+              fragment.appendChild(span);
+            } else {
+              fragment.appendChild(document.createTextNode(parts[i]));
+            }
+          }
+        }
+        
+        node.parentNode.replaceChild(fragment, node);
+      }
     }
 
     function insertText(text) {
@@ -380,7 +581,10 @@
       }
     }
 
+    // 修复4：IME中文输入法冲突
     function handleKeyDown(event) {
+      if (event.isComposing) return;
+      
       try {
         if (event.key === 'Enter') {
           event.preventDefault();
@@ -470,39 +674,46 @@
       }
     }
     
+    // 修复5：光标恢复延迟——将保存逻辑移入setTimeout回调
     function distributeTextWithDelay() {
       clearTimeout(updateTimeout);
       if (!autoInputEnabled) return;
       
-      // 保存光标位置
       const inputTextDiv = document.getElementById('input-text');
-      const caretPos = saveCaretPosition(inputTextDiv);
+      const textLen = inputTextDiv.innerText.length;
+      // 长文本性能保守优化：超过2000字符增加延迟，避免频繁全量重建
+      const delayMs = textLen > 2000 ? 600 : (textLen > 800 ? 400 : 300);
       
-      // 性能优化：减少DOM操作频率
       updateTimeout = setTimeout(() => {
+        const caretPos = saveCaretPosition(inputTextDiv);
+        
         try {
           distributeText();
           saveToLocalStorage();
           highlightDirectives(); // 更新高亮
+          // v5 fix: removed undoHistory.length = 0 to keep undo working after auto-input
         } catch (error) {
           showError(`文本处理失败: ${error.message}`);
         } finally {
           // 恢复光标位置
           restoreCaretPosition(inputTextDiv, caretPos);
         }
-      }, 300); // 延迟时间从500ms减少到300ms
+      }, delayMs);
     }
 
+    // 修复11：localStorage隐私模式异常降级
     function saveToLocalStorage() {
       try {
         const text = document.getElementById('input-text').innerText;
         localStorage.setItem('savedText', text);
       } catch (error) {
-        showError(`保存到本地存储失败: ${error.message}`);
+        // 隐私模式或其他存储异常，静默降级
+        console.warn('本地存储不可用:', error.message);
       }
     }
 
     // 性能优化：拆分大型函数
+    // 修复6：+N+指令添加上限检查
     function calculateEffectiveLength(text) {
       let effectiveLength = 0;
       
@@ -521,7 +732,8 @@
               j++;
             }
             if (validDirective && j < text.length && text[j] === '+') {
-              effectiveLength += parseInt(text.substring(i + 1, j), 10);
+              const numSpaces = Math.min(parseInt(text.substring(i + 1, j), 10), MAX_DIRECTIVE_SPACES);
+              effectiveLength += numSpaces;
               i = j;
             } else {
               effectiveLength++;
@@ -552,6 +764,8 @@
       return fragment;
     }
 
+    // 修复2：数组越界——行首标点避头添加 gridIndex > 0 守卫
+    // 修复6：+N+指令上限检查
     function fillGridItems(text, gridItems) {
       let gridIndex = 0;
       let i = 0;
@@ -579,10 +793,11 @@
               j++;
             }
             if (validDirective && j < text.length && text[j] === '+') {
-              const numSpaces = parseInt(text.substring(i + 1, j), 10);
+              const numSpaces = Math.min(parseInt(text.substring(i + 1, j), 10), MAX_DIRECTIVE_SPACES);
               for (let k = 0; k < numSpaces && gridIndex < gridItems.length; k++) {
                 gridItems[gridIndex].innerText = ' ';
-                gridItems[gridIndex].dataset.sourceIndex = i; // 记录原始位置
+                gridItems[gridIndex].dataset.sourceIndex = i;
+                gridItems[gridIndex].classList.add('space-directive');
                 gridIndex++;
               }
               i = j + 1;
@@ -600,15 +815,15 @@
           }
         } else {
           // 行首标点避头，排除省略号和破折号
-          if (gridIndex % GRID_COLUMNS_PER_ROW === 0 
-              && /[，。！？；：’”、）》,.!?;:]/.test(text[i]) 
+          if (gridIndex > 0 && gridIndex % GRID_COLUMNS_PER_ROW === 0 
+              && /[，。！？；：'"、）》,.!?;:]/.test(text[i]) 
               && text[i] !== '…' && text[i] !== '—') {
             gridItems[gridIndex - 1].innerText += text[i];
             // 对于合并的字符，不需要更新位置索引
           }
           // 引号后标点合并，同样排除省略号和破折号
           else if (gridIndex > 0 
-              && /[》”"]/.test(gridItems[gridIndex - 1].innerText) 
+              && /[》""]/.test(gridItems[gridIndex - 1].innerText) 
               && /[、，。：；？！,.?!;:]/.test(text[i]) 
               && text[i] !== '…' && text[i] !== '—') {
             gridItems[gridIndex - 1].innerText += text[i];
@@ -633,6 +848,7 @@
         const gridContainer = document.getElementById('grid-container');
         gridContainer.innerHTML = '';
         
+        
         // 性能优化：使用拆分后的函数
         const effectiveLength = calculateEffectiveLength(text);
         
@@ -646,9 +862,8 @@
         const gridItems = document.querySelectorAll('.grid-item');
         const gridIndex = fillGridItems(text, gridItems);
         
-        // 更新字数显示
-        const countDisplay = document.getElementById('count-display');
-        countDisplay.innerText = `表格计数: ${gridIndex}`;
+        // 更新字数显示（含目标进度）
+        updateCountDisplay(gridIndex);
         
         // 保存到撤销历史
         addToUndoHistory(text);
@@ -764,7 +979,7 @@
       }
     }
 
-    // 新增：导入TXT文件功能
+    // 修复8：导入/粘贴添加文本长度上限校验
     function importText() {
       try {
         // 创建文件输入元素
@@ -780,7 +995,14 @@
           const reader = new FileReader();
           reader.onload = function(e) {
             try {
-              const content = e.target.result;
+              let content = e.target.result;
+              
+              // 文本长度上限校验
+              if (content.length > MAX_IMPORT_TEXT_LENGTH) {
+                showError(`导入文件过大（${content.length} 字符），已截断至 ${MAX_IMPORT_TEXT_LENGTH} 字符`);
+                content = content.substring(0, MAX_IMPORT_TEXT_LENGTH);
+              }
+              
               const inputTextDiv = document.getElementById('input-text');
               
               // 保存光标位置
@@ -913,17 +1135,29 @@
       }
     }
 
+    // 修复11：localStorage隐私模式异常降级
     window.onload = function() {
       try {
-        const savedText = localStorage.getItem('savedText');
+        // 加载用户偏好（字数目标）
+        loadCountTarget();
+        
+        
+        let savedText = null;
+        try {
+          savedText = localStorage.getItem('savedText');
+        } catch (e) {
+          console.warn('无法读取本地存储:', e.message);
+        }
+        
         const inputTextDiv = document.getElementById('input-text');
         
-        // 设置默认文本
-        const defaultText = `+5+关于Y村脱贫攻坚工作的汇报
-各位领导、同事：
-+2+一、整改建议。1.组织调研到"田间地头"，了解情况，走家串户查找问题。
-+17+Y村村委
-+15+2024年9月27日`;
+        // 设置默认文本（申论/作文示例）
+        const defaultText = `+6+以奋斗之姿 赴时代之约
++2+时代的浪潮奔涌向前，每一朵浪花都承载着无数奋斗者的梦想与汗水。站在新的历史节点上，我们既是见证者，更是参与者。唯有以奋斗为笔，以实干为墨，方能书写无愧于时代的青春华章。
++2+奋斗是青春最亮丽的底色。"青春须早为，岂能长少年。"古往今来，无数先辈以奋斗诠释生命的价值。"+2+一、坚定理想信念。理想信念是精神之"钙"，指引我们在迷茫中找到方向，在困厄中坚守初心。
++2+二、练就过硬本领。空谈误国，实干兴邦。我们要在学习中增长知识，在实践中锤炼能力。
++2+三、勇于担当作为。面对时代的考题，我们要敢于迎难而上，在攻坚克难中彰显青年担当。
++2+"自信人生二百年，会当水击三千里。"让我们以奋斗之姿，赴时代之约，在实现中华民族伟大复兴的征程中贡献青春力量！`;
         
         if (savedText) {
           inputTextDiv.innerText = savedText;
@@ -937,8 +1171,14 @@
         
         // 添加双击事件监听器
         document.getElementById('grid-container').addEventListener('dblclick', handleGridItemDoubleClick);
+
+        // 输入框 focus 时格子区高亮
+        // v3 bug fix: removed duplicate const declaration
+        const gridContainer = document.getElementById('grid-container');
+        inputTextDiv.addEventListener('focus', () => gridContainer.classList.add('focus-highlight'));
+        inputTextDiv.addEventListener('blur', () => gridContainer.classList.remove('focus-highlight'));
       } catch (error) {
-        showError(`加载本地存储失败: ${error.message}`);
+        showError(`加载失败: ${error.message}`);
       }
     };
 
@@ -948,7 +1188,7 @@
         const step = 20;
         const currentWidth = parseInt(window.getComputedStyle(inputTextDiv).width, 10);
         const currentHeight = parseInt(window.getComputedStyle(inputTextDiv).height, 10);
-        
+
         if (action === 'narrow') {
           inputTextDiv.style.width = `${Math.max(100, currentWidth - step)}px`;
         } else if (action === 'wide') {
@@ -963,6 +1203,18 @@
       }
     }
 
+    // 6. 字号调节同步（输入区 + 格子区）
+    function adjustFontSize(delta) {
+      try {
+        const root = document.documentElement;
+        const current = parseFloat(getComputedStyle(root).getPropertyValue('--content-font-size')) || 18;
+        const newSize = Math.max(12, Math.min(32, current + delta));
+        root.style.setProperty('--content-font-size', newSize + 'px');
+      } catch (error) {
+        showError(`调整字号失败: ${error.message}`);
+      }
+    }
+
     function resetTextarea() {
       try {
         const inputTextDiv = document.getElementById('input-text');
@@ -972,6 +1224,72 @@
         showError(`重置文本框失败: ${error.message}`);
       }
     }
+
+
+    
+    /* ---------- P1-4: Word count target ---------- */
+    let countTarget = 0;
+    
+    function updateCountTarget() {
+      const input = document.getElementById('count-target');
+      const val = parseInt(input.value, 10);
+      countTarget = isNaN(val) || val < 0 ? 0 : val;
+      
+      // 保存目标
+      try {
+        if (countTarget > 0) {
+          localStorage.setItem('countTarget', String(countTarget));
+        } else {
+          localStorage.removeItem('countTarget');
+        }
+      } catch (e) {
+        console.warn('无法保存字数目标:', e.message);
+      }
+      
+      // 立即刷新显示
+      const countDisplay = document.getElementById('count-display');
+      const currentText = countDisplay.innerText;
+      const match = currentText.match(/表格计数:\s*(\d+)/);
+      if (match) {
+        updateCountDisplay(parseInt(match[1], 10));
+      }
+    }
+    
+    function loadCountTarget() {
+      try {
+        const saved = localStorage.getItem('countTarget');
+        if (saved) {
+          countTarget = parseInt(saved, 10);
+          const input = document.getElementById('count-target');
+          if (input) input.value = countTarget;
+        }
+      } catch (e) {
+        console.warn('无法读取字数目标:', e.message);
+      }
+    }
+    
+    function updateCountDisplay(gridIndex) {
+      const countDisplay = document.getElementById('count-display');
+      if (!countDisplay) return;
+      
+      if (countTarget > 0) {
+        const pct = Math.round((gridIndex / countTarget) * 100);
+        const over = gridIndex > countTarget;
+        countDisplay.innerText = `表格计数: ${gridIndex} / ${countTarget} (${pct}%)`;
+        if (over) {
+          countDisplay.classList.add('over-target');
+        } else {
+          countDisplay.classList.remove('over-target');
+        }
+      } else {
+        countDisplay.innerText = `表格计数: ${gridIndex}`;
+        countDisplay.classList.remove('over-target');
+      }
+    }
+    
+    
+    /* ---------- P1-5: Performance helpers ---------- */
+    // distributeTextWithDelay 中已集成基于文本长度的动态延迟
 
     /* 页面加载完毕后，立即填充已有文本（含本地存储恢复） */
     distributeText();
