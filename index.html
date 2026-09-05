@@ -146,6 +146,7 @@
       transition: box-shadow 0.3s ease;
       border-radius: 4px;
       padding: 4px;
+      contain: layout paint;
     }
     /* 3. 输入框 focus 时格子区高亮 */
     .grid-container.focus-highlight {
@@ -215,6 +216,8 @@
       resize: both;
       border-radius: 4px;
       transition: border-color 0.2s ease, box-shadow 0.2s ease;
+      contain: layout;
+      will-change: width, height;
     }
     .editable-div:focus {
       border-color: #1976d2;
@@ -378,6 +381,28 @@
       text-align: center;
     }
 
+
+    /* v9: 宽符号与排版空位样式 */
+    .grid-item.wide-symbol {
+      /* 宽符号第一格，允许内容溢出到第二格 */
+      overflow: visible;
+      z-index: 1;
+    }
+    .grid-item.wide-second {
+      /* 宽符号第二格占位，保持空 */
+      color: transparent;
+    }
+    .grid-item.layout-space {
+      /* 排版空位：视觉上为空，轻量背景提示 */
+      background-color: rgba(198, 40, 40, 0.02);
+    }
+    @media print {
+      .grid-item.wide-symbol,
+      .grid-item.wide-second {
+        break-inside: avoid;
+        page-break-inside: avoid;
+      }
+    }
   </style>
 </head>
 <body>
@@ -419,7 +444,7 @@
       </div>
     </div>
     <div class="grid-container" id="grid-container" role="grid" aria-label="答题格子纸"></div>
-    <div class="count-annotation" id="count-annotation">「表格计数」= 实际占用格子数（含指令空格与合并字符），与纯字符数不同</div>
+    <div class="count-annotation" id="count-annotation">「表格计数」= 实际占用格子数（含指令空格、合并字符与排版空位），与纯字符数不同</div>
   </div>
   <script>
     const GRID_COLUMNS_PER_ROW = 25;
@@ -430,27 +455,33 @@
     let errorTimeout;
     const initialWidth = '40%';
     const initialHeight = '250px';
-    
+
+    // v8 fix: resize 状态标志
+    let isResizing = false;
+    let resizeEndTimeout;
+
     // 新增：撤销历史记录
     const undoHistory = [];
     const MAX_UNDO_STEPS = 10;
 
-    // 新增：错误消息显示函数（淡入淡出）
+    // v9: 分帧渲染控制
+    let renderGeneration = 0;
+    let isBatchRendering = false;
+    const BATCH_RENDER_SIZE = 200;
+    const LARGE_PASTE_THRESHOLD = 300;
+
+    // v9: 标点分类常量
+    const DOT_PUNCT = /[\u3002\uFF0C\u3001\uFF1B\uFF1A\uFF1F\uFF01.,;:!?]/;
+    const HEAD_FORBIDDEN = /["'\u300F\u300D\)\u3015\uFF3D\]\}\u3011\u00B7\/\-\u2015\uFF5E]/;
+    const TAIL_FORBIDDEN = /["'\u300E\u300C\(\u3014\uFF3B\[\{\u3010\u300A\u3008]/;
+
     function showError(message) {
       const errorElement = document.getElementById('error-message');
-
-      // 清除旧定时器防止泄漏
-      if (errorTimeout) {
-        clearTimeout(errorTimeout);
-      }
-
+      if (errorTimeout) { clearTimeout(errorTimeout); }
       errorElement.innerText = message;
       errorElement.classList.add('show');
-
-      // 5秒后自动隐藏错误信息
       errorTimeout = setTimeout(() => {
         errorElement.classList.remove('show');
-        // 等待 transition 结束后彻底隐藏
         setTimeout(() => {
           if (!errorElement.classList.contains('show')) {
             errorElement.style.display = 'none';
@@ -459,35 +490,26 @@
       }, 5000);
     }
 
-    // 新增：保存和恢复光标位置的函数
     function saveCaretPosition(container) {
       const selection = window.getSelection();
       if (selection.rangeCount === 0) return null;
-      
       const range = selection.getRangeAt(0);
       const preRange = document.createRange();
       preRange.selectNodeContents(container);
       preRange.setEnd(range.startContainer, range.startOffset);
-      
-      return {
-        start: preRange.toString().length,
-        range: range
-      };
+      return { start: preRange.toString().length, range: range };
     }
 
     function restoreCaretPosition(container, pos) {
       if (pos === null) return;
-      
       const textNodes = getTextNodes(container);
       let total = 0;
-      
       for (let node of textNodes) {
         const length = node.nodeValue.length;
         if (pos.start <= total + length) {
           const range = document.createRange();
           range.setStart(node, pos.start - total);
           range.collapse(true);
-          
           const selection = window.getSelection();
           selection.removeAllRanges();
           selection.addRange(range);
@@ -496,14 +518,11 @@
         }
         total += length;
       }
-      
-      // 如果位置超出，放在最后
       if (textNodes.length > 0) {
         const lastNode = textNodes[textNodes.length - 1];
         const range = document.createRange();
         range.setStart(lastNode, lastNode.nodeValue.length);
         range.collapse(true);
-        
         const selection = window.getSelection();
         selection.removeAllRanges();
         selection.addRange(range);
@@ -514,48 +533,35 @@
     function getTextNodes(container) {
       const textNodes = [];
       const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, null, false);
-      
-      while (walker.nextNode()) {
-        textNodes.push(walker.currentNode);
-      }
-      
+      while (walker.nextNode()) { textNodes.push(walker.currentNode); }
       return textNodes;
     }
 
-    // 修复1+3：高亮指令时不破坏DOM结构，且对文本做实体编码防止XSS
     function highlightDirectives() {
       const inputTextDiv = document.getElementById('input-text');
       const directiveRegex = /\+\d+\+/;
-      
-      // 遍历所有文本节点，只替换文本内容，不破坏DOM结构
       const walker = document.createTreeWalker(inputTextDiv, NodeFilter.SHOW_TEXT, null, false);
       const nodesToReplace = [];
-      
       while (walker.nextNode()) {
         const node = walker.currentNode;
-        if (directiveRegex.test(node.nodeValue)) {
-          nodesToReplace.push(node);
-        }
+        if (directiveRegex.test(node.nodeValue)) { nodesToReplace.push(node); }
       }
-      
       for (const node of nodesToReplace) {
         const text = node.nodeValue;
         const parts = text.split(/(\+\d+\+)/);
         const fragment = document.createDocumentFragment();
-        
         for (let i = 0; i < parts.length; i++) {
           if (parts[i]) {
             if (/^\+\d+\+$/.test(parts[i])) {
               const span = document.createElement('span');
               span.className = 'directive';
-              span.textContent = parts[i]; // 使用 textContent 防止 XSS
+              span.textContent = parts[i];
               fragment.appendChild(span);
             } else {
               fragment.appendChild(document.createTextNode(parts[i]));
             }
           }
         }
-        
         node.parentNode.replaceChild(fragment, node);
       }
     }
@@ -564,312 +570,155 @@
       try {
         const inputTextDiv = document.getElementById('input-text');
         const selection = window.getSelection();
-        
         if (selection.rangeCount) {
           const range = selection.getRangeAt(0);
           range.deleteContents();
-          
           const textNode = document.createTextNode(text);
           range.insertNode(textNode);
-          
-          // 移动光标到插入位置之后
           range.setStartAfter(textNode);
           range.setEndAfter(textNode);
           selection.removeAllRanges();
           selection.addRange(range);
         }
-        
         distributeTextWithDelay();
-      } catch (error) {
-        showError(`插入文本失败: ${error.message}`);
-      }
+      } catch (error) { showError(`插入文本失败: ${error.message}`); }
     }
 
-    // 修复4：IME中文输入法冲突
     function handleKeyDown(event) {
       if (event.isComposing) return;
-      
       try {
-        if (event.key === 'Enter') {
-          event.preventDefault();
-          // 修改：回车时自动添加换行符和+2+指令
-          insertText('\n+2+');
-        } else if (event.key === 'Tab') {
-          event.preventDefault();
-          insertText('+2+');
-        } else if (event.key === ' ') {
-          event.preventDefault();
-          insertText(' ');
-        }
-      } catch (error) {
-        showError(`按键处理错误: ${error.message}`);
-      }
+        if (event.key === 'Enter') { event.preventDefault(); insertText('\n+2+'); }
+        else if (event.key === 'Tab') { event.preventDefault(); insertText('+2+'); }
+        else if (event.key === ' ') { event.preventDefault(); insertText(' '); }
+      } catch (error) { showError(`按键处理错误: ${error.message}`); }
     }
 
     function clearNewLines() {
       try {
         const inputTextDiv = document.getElementById('input-text');
-        
-        // 保存光标位置
         const caretPos = saveCaretPosition(inputTextDiv);
-        
         inputTextDiv.innerText = inputTextDiv.innerText.replace(/\n/g, '');
         highlightDirectives();
         distributeTextWithDelay();
-        
-        // 恢复光标位置
         restoreCaretPosition(inputTextDiv, caretPos);
-      } catch (error) {
-        showError(`清除换行失败: ${error.message}`);
-      }
+      } catch (error) { showError(`清除换行失败: ${error.message}`); }
     }
 
     function clearSpaces() {
       try {
         const inputTextDiv = document.getElementById('input-text');
-        
-        // 保存光标位置
         const caretPos = saveCaretPosition(inputTextDiv);
-        
         inputTextDiv.innerText = inputTextDiv.innerText.replace(/ /g, '');
         highlightDirectives();
         distributeTextWithDelay();
-        
-        // 恢复光标位置
         restoreCaretPosition(inputTextDiv, caretPos);
-      } catch (error) {
-        showError(`清除空格失败: ${error.message}`);
-      }
+      } catch (error) { showError(`清除空格失败: ${error.message}`); }
     }
 
     function clearInput() {
       try {
         const inputTextDiv = document.getElementById('input-text');
-        
-        // 保存光标位置
         const caretPos = saveCaretPosition(inputTextDiv);
-        
         inputTextDiv.innerText = '';
         highlightDirectives();
         distributeTextWithDelay();
-        
-        // 恢复光标位置（虽然内容为空，但保持光标在开头）
         restoreCaretPosition(inputTextDiv, caretPos);
-      } catch (error) {
-        showError(`清空输入失败: ${error.message}`);
-      }
+      } catch (error) { showError(`清空输入失败: ${error.message}`); }
     }
 
     function clearPlusN() {
       try {
         const inputTextDiv = document.getElementById('input-text');
-        
-        // 保存光标位置
         const caretPos = saveCaretPosition(inputTextDiv);
-        
         inputTextDiv.innerText = inputTextDiv.innerText.replace(/\+\d+\+/g, '');
         highlightDirectives();
         distributeTextWithDelay();
-        
-        // 恢复光标位置
         restoreCaretPosition(inputTextDiv, caretPos);
-      } catch (error) {
-        showError(`清除+N+指令失败: ${error.message}`);
-      }
+      } catch (error) { showError(`清除+N+指令失败: ${error.message}`); }
     }
-    
-    // 修复5：光标恢复延迟——将保存逻辑移入setTimeout回调
+
+    // v9: 分帧渲染的 distributeTextWithDelay
     function distributeTextWithDelay() {
       clearTimeout(updateTimeout);
       if (!autoInputEnabled) return;
-      
+      if (isResizing) return;
       const inputTextDiv = document.getElementById('input-text');
-      // v7 fix: 移除基于文本长度的延迟惩罚，统一使用固定短延迟
-      // 文本越长用户越需要快速反馈，不应反向增加延迟
       const delayMs = 80;
-      
       updateTimeout = setTimeout(() => {
         const caretPos = saveCaretPosition(inputTextDiv);
-        
         try {
           distributeText();
           saveToLocalStorage();
-          highlightDirectives(); // 更新高亮
-        } catch (error) {
-          showError(`文本处理失败: ${error.message}`);
-        } finally {
-          // 恢复光标位置
-          restoreCaretPosition(inputTextDiv, caretPos);
-        }
+          highlightDirectives();
+        } catch (error) { showError(`文本处理失败: ${error.message}`); }
+        finally { restoreCaretPosition(inputTextDiv, caretPos); }
       }, delayMs);
     }
 
-    // 修复11：localStorage隐私模式异常降级
     function saveToLocalStorage() {
       try {
         const text = document.getElementById('input-text').innerText;
         localStorage.setItem('savedText', text);
-      } catch (error) {
-        // 隐私模式或其他存储异常，静默降级
-        console.warn('本地存储不可用:', error.message);
-      }
+      } catch (error) { console.warn('本地存储不可用:', error.message); }
     }
 
-    // 性能优化：拆分大型函数
-    // 修复6：+N+指令添加上限检查
-    function calculateEffectiveLength(text) {
-      let effectiveLength = 0;
-      
-      for (let i = 0; i < text.length; i++) {
-        if (text[i] === '\n') {
-          effectiveLength += GRID_COLUMNS_PER_ROW - (effectiveLength % GRID_COLUMNS_PER_ROW);
-        } else if (text[i] === '+') {
-          if (/\d/.test(text[i + 1])) {
-            let j = i + 1;
-            let validDirective = true;
-            while (j < text.length && text[j] !== '+') {
-              if (!/\d/.test(text[j])) {
-                validDirective = false;
-                break;
-              }
-              j++;
-            }
-            if (validDirective && j < text.length && text[j] === '+') {
-              const numSpaces = Math.min(parseInt(text.substring(i + 1, j), 10), MAX_DIRECTIVE_SPACES);
-              effectiveLength += numSpaces;
-              i = j;
-            } else {
-              effectiveLength++;
-            }
-          } else {
-            effectiveLength++;
-          }
-        } else {
-          effectiveLength++;
+    // v9: 辅助函数 —— 找到前一个有效内容格
+    function findPrevContentCell(result, startIndex) {
+      for (let idx = startIndex; idx >= 0; idx--) {
+        const cell = result[idx];
+        if (cell && !cell.isLayoutSpace && !cell.isWideSecond && cell.text !== '') {
+          return idx;
         }
       }
-      
-      return effectiveLength;
+      return -1;
     }
 
-    function createGridItems(numItems) {
-      const fragment = document.createDocumentFragment();
-      
-      for (let i = 0; i < numItems; i++) {
-        const gridItem = document.createElement('div');
-        gridItem.className = 'grid-item';
-        if ((i + 1) % 100 === 0) {
-          gridItem.setAttribute('data-index', i + 1);
-        }
-        fragment.appendChild(gridItem);
-      }
-      
-      return fragment;
-    }
-
-    // 修复2：数组越界——行首标点避头添加 gridIndex > 0 守卫
-    // 修复6：+N+指令上限检查
-    function fillGridItems(text, gridItems) {
-      let gridIndex = 0;
-      let i = 0;
-      
-      while (i < text.length && gridIndex < gridItems.length) {
-        if (text[i] === '\n') {
-          if (gridIndex % GRID_COLUMNS_PER_ROW !== 0) {
-            gridIndex = Math.floor(gridIndex / GRID_COLUMNS_PER_ROW) * GRID_COLUMNS_PER_ROW + GRID_COLUMNS_PER_ROW;
-          }
-          i++;
-        } else if (/[a-zA-Z0-9]/.test(text[i]) && /[a-zA-Z0-9.]/.test(text[i + 1])) {
-          gridItems[gridIndex].innerText = text.substring(i, i + 2);
-          gridItems[gridIndex].dataset.sourceIndex = i; // 记录原始位置
+    // v9: 辅助函数 —— 放置宽符号（处理跨行禁则）
+    function placeWideSymbol(result, symbol, width, gridIndex, sourceIndex, maxItems) {
+      const posInRow = gridIndex % GRID_COLUMNS_PER_ROW;
+      const remaining = GRID_COLUMNS_PER_ROW - posInRow;
+      // 如果当前不在行首且剩余空间不足，先填满当前行（排版空位）
+      if (posInRow !== 0 && remaining < width) {
+        while (gridIndex % GRID_COLUMNS_PER_ROW !== 0 && gridIndex < maxItems) {
+          result[gridIndex] = { text: '', sourceIndex: sourceIndex, isLayoutSpace: true };
           gridIndex++;
-          i += 2;
-        } else if (text[i] === '+') {
-          if (/\d/.test(text[i + 1])) {
-            let j = i + 1;
-            let validDirective = true;
-            while (j < text.length && text[j] !== '+') {
-              if (!/\d/.test(text[j])) {
-                validDirective = false;
-                break;
-              }
-              j++;
-            }
-            if (validDirective && j < text.length && text[j] === '+') {
-              const numSpaces = Math.min(parseInt(text.substring(i + 1, j), 10), MAX_DIRECTIVE_SPACES);
-              for (let k = 0; k < numSpaces && gridIndex < gridItems.length; k++) {
-                gridItems[gridIndex].innerText = ' ';
-                gridItems[gridIndex].dataset.sourceIndex = i;
-                gridItems[gridIndex].classList.add('space-directive');
-                gridIndex++;
-              }
-              i = j + 1;
-            } else {
-              gridItems[gridIndex].innerText = text[i];
-              gridItems[gridIndex].dataset.sourceIndex = i; // 记录原始位置
-              gridIndex++;
-              i++;
-            }
-          } else {
-            gridItems[gridIndex].innerText = text[i];
-            gridItems[gridIndex].dataset.sourceIndex = i; // 记录原始位置
-            gridIndex++;
-            i++;
-          }
-        } else {
-          // 行首标点避头，排除省略号和破折号
-          if (gridIndex > 0 && gridIndex % GRID_COLUMNS_PER_ROW === 0 
-              && /[，。！？；：'"、）》,.!?;:]/.test(text[i]) 
-              && text[i] !== '…' && text[i] !== '—') {
-            gridItems[gridIndex - 1].innerText += text[i];
-            // 对于合并的字符，不需要更新位置索引
-          }
-          // 引号后标点合并，同样排除省略号和破折号
-          else if (gridIndex > 0 
-              && /[》""]/.test(gridItems[gridIndex - 1].innerText) 
-              && /[、，。：；？！,.?!;:]/.test(text[i]) 
-              && text[i] !== '…' && text[i] !== '—') {
-            gridItems[gridIndex - 1].innerText += text[i];
-            // 对于合并的字符，不需要更新位置索引
-          }
-          else {
-            gridItems[gridIndex].innerText = text[i];
-            gridItems[gridIndex].dataset.sourceIndex = i; // 记录原始位置
-            gridIndex++;
-          }
-          i++;
         }
       }
-      
+      if (gridIndex >= maxItems) return gridIndex;
+      // 放置符号第一格
+      result[gridIndex] = { text: symbol, sourceIndex: sourceIndex, isWide: true };
+      gridIndex++;
+      // 放置后续占位格
+      for (let w = 1; w < width && gridIndex < maxItems; w++) {
+        result[gridIndex] = { text: '', sourceIndex: sourceIndex, isWideSecond: true };
+        gridIndex++;
+      }
       return gridIndex;
     }
 
-    // v7 fix: 新增 computeGridContent —— 纯计算函数，不操作 DOM
-    // 将 fillGridItems 的逻辑提取为返回数组，便于批量 DOM 更新
+    // v9: 重写 computeGridContent —— 包含完整标点排版规则
     function computeGridContent(text, maxItems) {
       const result = [];
       let gridIndex = 0;
       let i = 0;
 
       while (i < text.length && gridIndex < maxItems) {
+        // 1. 换行符
         if (text[i] === '\n') {
           if (gridIndex % GRID_COLUMNS_PER_ROW !== 0) {
             gridIndex = Math.floor(gridIndex / GRID_COLUMNS_PER_ROW) * GRID_COLUMNS_PER_ROW + GRID_COLUMNS_PER_ROW;
           }
           i++;
-        } else if (/[a-zA-Z0-9]/.test(text[i]) && /[a-zA-Z0-9.]/.test(text[i + 1])) {
-          result[gridIndex] = { text: text.substring(i, i + 2), sourceIndex: i, isSpaceDirective: false };
-          gridIndex++;
-          i += 2;
-        } else if (text[i] === '+') {
+          continue;
+        }
+
+        // 2. +N+ 指令
+        if (text[i] === '+') {
           if (/\d/.test(text[i + 1])) {
             let j = i + 1;
             let validDirective = true;
             while (j < text.length && text[j] !== '+') {
-              if (!/\d/.test(text[j])) {
-                validDirective = false;
-                break;
-              }
+              if (!/\d/.test(text[j])) { validDirective = false; break; }
               j++;
             }
             if (validDirective && j < text.length && text[j] === '+') {
@@ -879,122 +728,311 @@
                 gridIndex++;
               }
               i = j + 1;
+              continue;
             } else {
               result[gridIndex] = { text: text[i], sourceIndex: i, isSpaceDirective: false };
-              gridIndex++;
-              i++;
+              gridIndex++; i++;
+              continue;
             }
           } else {
             result[gridIndex] = { text: text[i], sourceIndex: i, isSpaceDirective: false };
-            gridIndex++;
-            i++;
+            gridIndex++; i++;
+            continue;
           }
-        } else {
-          // 行首标点避头，排除省略号和破折号
-          if (gridIndex > 0 && gridIndex % GRID_COLUMNS_PER_ROW === 0
-              && /[，。！？；：'""、）》,.!?;:]/.test(text[i])
-              && text[i] !== '…' && text[i] !== '—') {
-            if (result[gridIndex - 1]) {
-              result[gridIndex - 1].text += text[i];
+        }
+
+        // 3. 字母数字合并
+        if (/[a-zA-Z0-9]/.test(text[i]) && /[a-zA-Z0-9.]/.test(text[i + 1])) {
+          result[gridIndex] = { text: text.substring(i, i + 2), sourceIndex: i, isSpaceDirective: false };
+          gridIndex++; i += 2;
+          continue;
+        }
+
+        // 4. 叠用标点（全角与半角）
+        // 4.1 ?! / !?（1格，挤格）
+        if ((text[i] === '?' && text[i+1] === '!') || (text[i] === '!' && text[i+1] === '?') ||
+            (text[i] === '\uFF1F' && text[i+1] === '\uFF01') || (text[i] === '\uFF01' && text[i+1] === '\uFF1F')) {
+          const combo = text.substring(i, i + 2);
+          if (gridIndex > 0) {
+            const prev = findPrevContentCell(result, gridIndex - 1);
+            if (prev >= 0) { result[prev].text += combo; i += 2; continue; }
+          }
+          result[gridIndex] = { text: combo, sourceIndex: i };
+          gridIndex += 1; i += 2;
+          continue;
+        }
+        // 4.2 ??? / !!!（2格宽符号）
+        if ((text[i] === '?' && text[i+1] === '?' && text[i+2] === '?') ||
+            (text[i] === '!' && text[i+1] === '!' && text[i+2] === '!') ||
+            (text[i] === '\uFF1F' && text[i+1] === '\uFF1F' && text[i+2] === '\uFF1F') ||
+            (text[i] === '\uFF01' && text[i+1] === '\uFF01' && text[i+2] === '\uFF01')) {
+          gridIndex = placeWideSymbol(result, text.substring(i, i + 3), 2, gridIndex, i, maxItems);
+          i += 3;
+          continue;
+        }
+        // 4.3 ?? / !!（1格，挤格）
+        if ((text[i] === '?' && text[i+1] === '?') || (text[i] === '!' && text[i+1] === '!') ||
+            (text[i] === '\uFF1F' && text[i+1] === '\uFF1F') || (text[i] === '\uFF01' && text[i+1] === '\uFF01')) {
+          const combo = text.substring(i, i + 2);
+          if (gridIndex > 0) {
+            const prev = findPrevContentCell(result, gridIndex - 1);
+            if (prev >= 0) { result[prev].text += combo; i += 2; continue; }
+          }
+          result[gridIndex] = { text: combo, sourceIndex: i };
+          gridIndex += 1; i += 2;
+          continue;
+        }
+
+        // 5. 破折号 ——（2格宽符号）
+        if (text[i] === '\u2014' && text[i+1] === '\u2014') {
+          gridIndex = placeWideSymbol(result, '\u2014\u2014', 2, gridIndex, i, maxItems);
+          i += 2;
+          continue;
+        }
+        // 单个破折号 —（1格）
+        if (text[i] === '\u2014') {
+          result[gridIndex] = { text: '\u2014', sourceIndex: i };
+          gridIndex++; i++;
+          continue;
+        }
+
+        // 6. 省略号 ……（2格宽符号）
+        if (text[i] === '\u2026' && text[i+1] === '\u2026') {
+          gridIndex = placeWideSymbol(result, '\u2026\u2026', 2, gridIndex, i, maxItems);
+          i += 2;
+          continue;
+        }
+        // 单个省略号字符 …（1格）
+        if (text[i] === '\u2026') {
+          result[gridIndex] = { text: '\u2026', sourceIndex: i };
+          gridIndex++; i++;
+          continue;
+        }
+
+        // 7. 行末禁则（避尾）：前引号、前括号、前书名号不能出现在行末
+        if (TAIL_FORBIDDEN.test(text[i])) {
+          const posInRow = gridIndex % GRID_COLUMNS_PER_ROW;
+          if (posInRow === GRID_COLUMNS_PER_ROW - 1) {
+            // 在行末，留排版空位后推至下一行
+            result[gridIndex] = { text: '', sourceIndex: i, isLayoutSpace: true };
+            gridIndex++;
+            result[gridIndex] = { text: text[i], sourceIndex: i };
+            gridIndex++; i++;
+            continue;
+          }
+        }
+
+        // 8. 点号挤格：与前一字符共占一格
+        if (DOT_PUNCT.test(text[i])) {
+          if (gridIndex > 0) {
+            const prev = findPrevContentCell(result, gridIndex - 1);
+            if (prev >= 0) {
+              result[prev].text += text[i];
+              i++;
+              continue;
             }
           }
-          // 引号后标点合并，同样排除省略号和破折号
-          else if (gridIndex > 0
-              && result[gridIndex - 1] && /[》""]/.test(result[gridIndex - 1].text)
-              && /[、，。：；？！,.?!;:]/.test(text[i])
-              && text[i] !== '…' && text[i] !== '—') {
-            result[gridIndex - 1].text += text[i];
-          }
-          else {
-            result[gridIndex] = { text: text[i], sourceIndex: i, isSpaceDirective: false };
-            gridIndex++;
-          }
-          i++;
+          // 无前一内容格（如全文第一个字符就是点号），独占一格
+          result[gridIndex] = { text: text[i], sourceIndex: i };
+          gridIndex++; i++;
+          continue;
         }
+
+        // 9. 行首禁则（避头）：后引号、后括号、间隔号、分隔号、连接号不能出现在行首
+        if (gridIndex > 0 && gridIndex % GRID_COLUMNS_PER_ROW === 0 && HEAD_FORBIDDEN.test(text[i])) {
+          const prev = findPrevContentCell(result, gridIndex - 1);
+          if (prev >= 0) {
+            result[prev].text += text[i];
+            i++;
+            continue;
+          }
+          //  fallback: 独占一格（理论上不会走到这里）
+          result[gridIndex] = { text: text[i], sourceIndex: i };
+          gridIndex++; i++;
+          continue;
+        }
+
+        // 10. 普通字符：独占一格
+        result[gridIndex] = { text: text[i], sourceIndex: i };
+        gridIndex++; i++;
       }
 
       return { result, gridIndex };
     }
 
+    // v9: 重写 calculateEffectiveLength 以匹配新 computeGridContent 逻辑
+    function calculateEffectiveLength(text) {
+      // 用 computeGridContent 计算精确长度（maxItems 设足够大）
+      const { gridIndex } = computeGridContent(text, Number.MAX_SAFE_INTEGER);
+      return gridIndex;
+    }
+
+    function createGridItems(numItems) {
+      const fragment = document.createDocumentFragment();
+      for (let i = 0; i < numItems; i++) {
+        const gridItem = document.createElement('div');
+        gridItem.className = 'grid-item';
+        if ((i + 1) % 100 === 0) {
+          gridItem.setAttribute('data-index', i + 1);
+        }
+        fragment.appendChild(gridItem);
+      }
+      return fragment;
+    }
+
+    // v9: 同步更新已有格子及指定范围内的新格子
+    function syncUpdateGridRange(gridContainer, startIdx, endIdx, result) {
+      const gridItems = gridContainer.children;
+      for (let i = startIdx; i < endIdx; i++) {
+        const item = gridItems[i];
+        const r = result[i];
+        if (!r) {
+          if (item.innerText !== '' || item.classList.length > 1 || item.dataset.sourceIndex) {
+            item.innerText = '';
+            item.removeAttribute('data-source-index');
+            item.className = 'grid-item';
+          }
+          continue;
+        }
+        if (item.innerText !== r.text) { item.innerText = r.text; }
+        if (item.dataset.sourceIndex !== String(r.sourceIndex)) {
+          item.dataset.sourceIndex = r.sourceIndex;
+        }
+        // 重置 class
+        let cls = 'grid-item';
+        if (r.isSpaceDirective) cls += ' space-directive';
+        if (r.isWide) cls += ' wide-symbol';
+        if (r.isWideSecond) cls += ' wide-second';
+        if (r.isLayoutSpace) cls += ' layout-space';
+        if (item.className !== cls) { item.className = cls; }
+      }
+    }
+
+    // v9: 重写 distributeText —— 支持分帧渲染
     function distributeText() {
       try {
+        // 清除待处理的撤销历史定时器，避免旧状态干扰
+        clearTimeout(undoThrottleTimer);
         const inputTextDiv = document.getElementById('input-text');
-        const text = inputTextDiv.innerText; // 获取纯文本内容
+        const text = inputTextDiv.innerText;
         const gridContainer = document.getElementById('grid-container');
 
-        // v7 fix: 增量更新 —— 不再 innerHTML='' 全量清空重建
-        const effectiveLength = calculateEffectiveLength(text);
-        const numRows = Math.ceil(effectiveLength / GRID_COLUMNS_PER_ROW);
+        // 计算内容
+        const { result, gridIndex } = computeGridContent(text, Number.MAX_SAFE_INTEGER);
+        const numRows = Math.ceil(gridIndex / GRID_COLUMNS_PER_ROW);
         const numItems = numRows * GRID_COLUMNS_PER_ROW;
 
-        // 1) 增量管理格子数量：只增删差异部分
+        // 立即更新字数统计（基于计算结果，与渲染进度无关）
+        updateCountDisplay(gridIndex);
+
+        // 增量管理格子数量
         const currentCount = gridContainer.childElementCount;
-        if (currentCount > numItems) {
-          const toRemove = currentCount - numItems;
+        const itemsToAdd = numItems - currentCount;
+
+        // 如果是减少格子，直接同步处理
+        if (itemsToAdd < 0) {
+          const toRemove = -itemsToAdd;
           for (let i = 0; i < toRemove; i++) {
             gridContainer.removeChild(gridContainer.lastChild);
           }
-        } else if (currentCount < numItems) {
-          const fragment = createGridItems(numItems - currentCount);
-          gridContainer.appendChild(fragment);
-        }
-
-        // 2) 纯计算目标内容（无 DOM 操作）
-        const { result, gridIndex } = computeGridContent(text, numItems);
-
-        // 3) 批量更新 DOM：只修改发生变化的格子
-        const gridItems = gridContainer.children;
-        for (let i = 0; i < gridIndex; i++) {
-          const item = gridItems[i];
-          const r = result[i];
-          // v7 fix: 换行跳过的格子 result 可能为 undefined，按空白处理
-          if (!r) {
-            if (item.innerText !== '' || item.classList.contains('space-directive') || item.dataset.sourceIndex) {
+          // 同步更新所有现有格子
+          syncUpdateGridRange(gridContainer, 0, Math.min(gridIndex, numItems), result);
+          // 清空多余格子
+          for (let i = gridIndex; i < gridContainer.children.length; i++) {
+            const item = gridContainer.children[i];
+            if (item.innerText !== '' || item.classList.length > 1 || item.dataset.sourceIndex) {
               item.innerText = '';
               item.removeAttribute('data-source-index');
-              item.classList.remove('space-directive');
+              item.className = 'grid-item';
             }
-            continue;
           }
-          if (item.innerText !== r.text) {
-            item.innerText = r.text;
+          throttledAddToUndoHistory(text);
+          document.getElementById('error-message').style.display = 'none';
+          isBatchRendering = false;
+          return;
+        }
+
+        // 如果新增格子数不超过阈值，走同步快速路径
+        if (itemsToAdd <= LARGE_PASTE_THRESHOLD) {
+          if (itemsToAdd > 0) {
+            const fragment = createGridItems(itemsToAdd);
+            gridContainer.appendChild(fragment);
           }
-          if (item.dataset.sourceIndex !== String(r.sourceIndex)) {
-            item.dataset.sourceIndex = r.sourceIndex;
+          syncUpdateGridRange(gridContainer, 0, gridIndex, result);
+          for (let i = gridIndex; i < gridContainer.children.length; i++) {
+            const item = gridContainer.children[i];
+            if (item.innerText !== '' || item.classList.length > 1 || item.dataset.sourceIndex) {
+              item.innerText = '';
+              item.removeAttribute('data-source-index');
+              item.className = 'grid-item';
+            }
           }
-          if (r.isSpaceDirective) {
-            item.classList.add('space-directive');
+          throttledAddToUndoHistory(text);
+          document.getElementById('error-message').style.display = 'none';
+          isBatchRendering = false;
+          return;
+        }
+
+        // v9: 大文本粘贴 —— 分帧渲染
+        const gen = ++renderGeneration;
+        isBatchRendering = true;
+
+        // 第一批：同步插入前 BATCH_RENDER_SIZE 个新格子，并更新已有格子
+        const firstBatchNew = Math.min(itemsToAdd, BATCH_RENDER_SIZE);
+        if (firstBatchNew > 0) {
+          const fragment = createGridItems(firstBatchNew);
+          gridContainer.appendChild(fragment);
+        }
+        const firstBatchTotal = currentCount + firstBatchNew;
+        syncUpdateGridRange(gridContainer, 0, Math.min(gridIndex, firstBatchTotal), result);
+
+        let renderedCount = firstBatchTotal;
+        let lastYieldTime = performance.now();
+
+        function renderNextBatch() {
+          if (gen !== renderGeneration) { isBatchRendering = false; return; }
+
+          const now = performance.now();
+          // 每帧最多处理 BATCH_RENDER_SIZE 个新增格子
+          const batchNew = Math.min(numItems - renderedCount, BATCH_RENDER_SIZE);
+          if (batchNew > 0) {
+            const fragment = createGridItems(batchNew);
+            gridContainer.appendChild(fragment);
+          }
+          const nextCount = renderedCount + batchNew;
+          // 更新这批新格子的内容
+          syncUpdateGridRange(gridContainer, renderedCount, Math.min(gridIndex, nextCount), result);
+          renderedCount = nextCount;
+
+          if (renderedCount < numItems) {
+            requestAnimationFrame(renderNextBatch);
           } else {
-            item.classList.remove('space-directive');
+            // 所有格子创建完成，清空未使用的格子
+            for (let i = gridIndex; i < gridContainer.children.length; i++) {
+              const item = gridContainer.children[i];
+              if (item.innerText !== '' || item.classList.length > 1 || item.dataset.sourceIndex) {
+                item.innerText = '';
+                item.removeAttribute('data-source-index');
+                item.className = 'grid-item';
+              }
+            }
+            isBatchRendering = false;
+            throttledAddToUndoHistory(text);
+            document.getElementById('error-message').style.display = 'none';
           }
         }
 
-        // 4) 清空未使用的格子（复用，不销毁）
-        for (let i = gridIndex; i < gridItems.length; i++) {
-          const item = gridItems[i];
-          if (item.innerText !== '' || item.classList.contains('space-directive') || item.dataset.sourceIndex) {
-            item.innerText = '';
-            item.removeAttribute('data-source-index');
-            item.classList.remove('space-directive');
-          }
-        }
+        requestAnimationFrame(renderNextBatch);
 
-        // 更新字数显示（含目标进度）
-        updateCountDisplay(gridIndex);
-
-        // v7 fix: 撤销历史节流 —— 避免高频输入时连续保存大字符串
-        throttledAddToUndoHistory(text);
-
-        // 隐藏之前的错误信息
-        document.getElementById('error-message').style.display = 'none';
       } catch (error) {
         console.error("网格生成错误:", error);
         showError(`处理文本时发生错误: ${error.message}\n请检查特殊字符或简化文本`);
         document.getElementById('grid-container').innerHTML = '<div class="error">生成失败，请尝试简化文本</div>';
+        isBatchRendering = false;
       }
     }
 
-    // v7 fix: 撤销历史节流 —— 避免高频输入时连续保存完整大字符串
+    // v7 fix: 撤销历史节流
     let undoThrottleTimer = null;
     let lastUndoCandidate = null;
 
@@ -1006,50 +1044,25 @@
       }, 400);
     }
 
-    // 新增：添加到撤销历史
     function addToUndoHistory(text) {
-      // 只保存不同的状态
       if (undoHistory.length === 0 || undoHistory[undoHistory.length - 1] !== text) {
         undoHistory.push(text);
-        
-        // 限制历史记录长度
-        if (undoHistory.length > MAX_UNDO_STEPS) {
-          undoHistory.shift(); // 移除最早的历史记录
-        }
+        if (undoHistory.length > MAX_UNDO_STEPS) { undoHistory.shift(); }
       }
     }
 
-    // 修改后：撤销功能中保存和恢复光标位置
     function undo() {
       try {
-        if (undoHistory.length < 2) {
-          showError('无法撤销：历史记录不足');
-          return;
-        }
-        
+        if (undoHistory.length < 2) { showError('无法撤销：历史记录不足'); return; }
         const inputTextDiv = document.getElementById('input-text');
-        
-        // 保存当前光标位置
         const caretPos = saveCaretPosition(inputTextDiv);
-        
-        // 移除当前状态
         undoHistory.pop();
-        
-        // 获取上一个状态
         const prevText = undoHistory[undoHistory.length - 1];
-        
-        // 更新文本框内容
         inputTextDiv.innerText = prevText;
         highlightDirectives();
-        
-        // 重新渲染网格
         distributeText();
-        
-        // 恢复光标位置
         restoreCaretPosition(inputTextDiv, caretPos);
-      } catch (error) {
-        showError(`撤销操作失败: ${error.message}`);
-      }
+      } catch (error) { showError(`撤销操作失败: ${error.message}`); }
     }
 
     function toggleAutoInput() {
@@ -1057,168 +1070,97 @@
         autoInputEnabled = !autoInputEnabled;
         const button = document.getElementById('toggle-auto-input');
         button.innerText = autoInputEnabled ? '自动输入·开' : '自动输入·关';
-        
-        // 更新按钮颜色
-        if (autoInputEnabled) {
-          button.classList.remove('auto-off');
-          button.classList.add('auto-on');
-        } else {
-          button.classList.remove('auto-on');
-          button.classList.add('auto-off');
-        }
-      } catch (error) {
-        showError(`切换自动输入失败: ${error.message}`);
-      }
+        if (autoInputEnabled) { button.classList.remove('auto-off'); button.classList.add('auto-on'); }
+        else { button.classList.remove('auto-on'); button.classList.add('auto-off'); }
+      } catch (error) { showError(`切换自动输入失败: ${error.message}`); }
     }
 
     function downloadText() {
       try {
         const text = document.getElementById('input-text').innerText;
-        
-        // 获取第一行文本（标题行）
         const firstLineEnd = text.indexOf('\n');
         let titleLine = firstLineEnd > -1 ? text.substring(0, firstLineEnd) : text;
-        
-        // 移除+N+指令并获取前25个字符
         const cleanTitle = titleLine.replace(/\+\d+\+/g, '');
         const prefix = cleanTitle.substring(0, 25).replace(/[\n\r]/g, '');
-        
         const blob = new Blob([text], { type: 'text/plain' });
         const url = URL.createObjectURL(blob);
         const now = new Date();
-        const year = now.getFullYear();
-        const month = String(now.getMonth() + 1).padStart(2, '0');
-        const day = String(now.getDate()).padStart(2, '0');
-        const hours = String(now.getHours()).padStart(2, '0');
-        const minutes = String(now.getMinutes()).padStart(2, '0');
-        
-        // 使用处理后的标题作为文件名前缀
-        const fileName = `${year}${month}${day}${hours}${minutes}_${prefix}.txt`;
-        
+        const fileName = `${now.getFullYear()}${String(now.getMonth()+1).padStart(2,'0')}${String(now.getDate()).padStart(2,'0')}${String(now.getHours()).padStart(2,'0')}${String(now.getMinutes()).padStart(2,'0')}_${prefix}.txt`;
         const a = document.createElement('a');
-        a.href = url;
-        a.download = fileName;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
+        a.href = url; a.download = fileName;
+        document.body.appendChild(a); a.click();
+        document.body.removeChild(a); URL.revokeObjectURL(url);
       } catch (error) {
         console.error("下载失败:", error);
         showError(`文件下载失败: ${error.message}\n请检查浏览器权限`);
       }
     }
 
-    // 修复8：导入/粘贴添加文本长度上限校验
     function importText() {
       try {
-        // 创建文件输入元素
         const fileInput = document.createElement('input');
-        fileInput.type = 'file';
-        fileInput.accept = '.txt';
-        
-        // 处理文件选择
+        fileInput.type = 'file'; fileInput.accept = '.txt';
         fileInput.onchange = function(event) {
           const file = event.target.files[0];
           if (!file) return;
-          
           const reader = new FileReader();
           reader.onload = function(e) {
             try {
               let content = e.target.result;
-              
-              // 文本长度上限校验
               if (content.length > MAX_IMPORT_TEXT_LENGTH) {
                 showError(`导入文件过大（${content.length} 字符），已截断至 ${MAX_IMPORT_TEXT_LENGTH} 字符`);
                 content = content.substring(0, MAX_IMPORT_TEXT_LENGTH);
               }
-              
               const inputTextDiv = document.getElementById('input-text');
-              
-              // 保存光标位置
               const caretPos = saveCaretPosition(inputTextDiv);
-              
-              // 更新文本框内容
               inputTextDiv.innerText = content;
-              
-              // 高亮指令
               highlightDirectives();
-              
-              // 分发文本到网格
               distributeText();
-              
-              // 保存到本地存储
               saveToLocalStorage();
-              
-              // 恢复光标位置
               restoreCaretPosition(inputTextDiv, caretPos);
-              
-              // 显示成功消息
               showError(`成功导入文件: ${file.name}`);
-            } catch (error) {
-              showError(`导入文件失败: ${error.message}`);
-            }
+            } catch (error) { showError(`导入文件失败: ${error.message}`); }
           };
-          
-          reader.onerror = function() {
-            showError('读取文件失败，请检查文件格式');
-          };
-          
+          reader.onerror = function() { showError('读取文件失败，请检查文件格式'); };
           reader.readAsText(file);
         };
-        
-        // 触发文件选择对话框
         fileInput.click();
-      } catch (error) {
-        showError(`导入功能出错: ${error.message}`);
-      }
+      } catch (error) { showError(`导入功能出错: ${error.message}`); }
     }
 
-    // 新增：设置光标到指定位置
     function setCaretToPosition(container, position) {
       const textNodes = getTextNodes(container);
       let total = 0;
-      
       for (let node of textNodes) {
         const length = node.nodeValue.length;
         if (position >= total && position <= total + length) {
           const range = document.createRange();
           range.setStart(node, position - total);
           range.collapse(true);
-          
           const selection = window.getSelection();
           selection.removeAllRanges();
           selection.addRange(range);
           container.focus();
-          
-          // 添加临时高亮效果
           const highlight = document.createElement('span');
           highlight.className = 'cursor-highlight';
           highlight.appendChild(range.extractContents());
           range.insertNode(highlight);
-          
-          // 移除高亮效果
           setTimeout(() => {
             if (highlight.parentNode) {
               const parent = highlight.parentNode;
-              while (highlight.firstChild) {
-                parent.insertBefore(highlight.firstChild, highlight);
-              }
+              while (highlight.firstChild) { parent.insertBefore(highlight.firstChild, highlight); }
               parent.removeChild(highlight);
             }
           }, 1000);
-          
           return;
         }
         total += length;
       }
-      
-      // 如果位置超出，放在最后
       if (textNodes.length > 0) {
         const lastNode = textNodes[textNodes.length - 1];
         const range = document.createRange();
         range.setStart(lastNode, lastNode.nodeValue.length);
         range.collapse(true);
-        
         const selection = window.getSelection();
         selection.removeAllRanges();
         selection.addRange(range);
@@ -1226,90 +1168,64 @@
       }
     }
 
-    // 新增：处理格子双击事件
     function handleGridItemDoubleClick(event) {
       const gridItem = event.target;
       if (!gridItem.classList.contains('grid-item')) return;
-      
       const sourceIndex = gridItem.dataset.sourceIndex;
       if (sourceIndex === undefined) return;
-      
       const inputTextDiv = document.getElementById('input-text');
-      
-      // 滚动页面使输入框可见
       inputTextDiv.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      
-      // 设置光标位置
       setCaretToPosition(inputTextDiv, parseInt(sourceIndex));
-      
-      // 滚动输入框内部使光标位置可见
       const range = document.createRange();
       const sel = window.getSelection();
       if (sel.rangeCount > 0) {
         range.setStart(sel.anchorNode, sel.anchorOffset);
         range.collapse(true);
-        range.getClientRects(); // 强制布局计算
+        range.getClientRects();
         const rect = range.getBoundingClientRect();
-        
-        // 计算输入框滚动位置
         const containerRect = inputTextDiv.getBoundingClientRect();
-        const scrollTop = inputTextDiv.scrollTop;
-        const newScrollTop = scrollTop + (rect.top - containerRect.top) - (containerRect.height / 2);
-        
-        // 平滑滚动到光标位置
-        inputTextDiv.scrollTo({
-          top: newScrollTop,
-          behavior: 'smooth'
-        });
+        const newScrollTop = inputTextDiv.scrollTop + (rect.top - containerRect.top) - (containerRect.height / 2);
+        inputTextDiv.scrollTo({ top: newScrollTop, behavior: 'smooth' });
       }
     }
 
-    // 修复11：localStorage隐私模式异常降级
     window.onload = function() {
       try {
-        // 加载用户偏好（字数目标）
         loadCountTarget();
-        
-        
         let savedText = null;
-        try {
-          savedText = localStorage.getItem('savedText');
-        } catch (e) {
-          console.warn('无法读取本地存储:', e.message);
-        }
-        
+        try { savedText = localStorage.getItem('savedText'); }
+        catch (e) { console.warn('无法读取本地存储:', e.message); }
         const inputTextDiv = document.getElementById('input-text');
-        
-        // 设置默认文本（申论/作文示例）
-        const defaultText = `+4+以奋斗之姿 赴时代之约
+        const defaultText = `+6+以奋斗之姿 赴时代之约
 +2+时代的浪潮奔涌向前，每一朵浪花都承载着无数奋斗者的梦想与汗水。站在新的历史节点上，我们既是见证者，更是参与者。唯有以奋斗为笔，以实干为墨，方能书写无愧于时代的青春华章。
-+2+奋斗是青春最亮丽的底色。"青春须早为，岂能长少年。"古往今来，无数先辈以奋斗诠释生命的价值。"
-+2+一、坚定理想信念。理想信念是精神之"钙"，指引我们在迷茫中找到方向，在困厄中坚守初心。
++2+奋斗是青春最亮丽的底色。"青春须早为，岂能长少年。"古往今来，无数先辈以奋斗诠释生命的价值。"+2+一、坚定理想信念。理想信念是精神之"钙"，指引我们在迷茫中找到方向，在困厄中坚守初心。
 +2+二、练就过硬本领。空谈误国，实干兴邦。我们要在学习中增长知识，在实践中锤炼能力。
 +2+三、勇于担当作为。面对时代的考题，我们要敢于迎难而上，在攻坚克难中彰显青年担当。
 +2+"自信人生二百年，会当水击三千里。"让我们以奋斗之姿，赴时代之约，在实现中华民族伟大复兴的征程中贡献青春力量！`;
-        
-        if (savedText) {
-          inputTextDiv.innerText = savedText;
-        } else {
-          inputTextDiv.innerText = defaultText;
-        }
-        
-        // 初始高亮
-        highlightDirectives();
-        distributeText();
-        
-        // 添加双击事件监听器
-        document.getElementById('grid-container').addEventListener('dblclick', handleGridItemDoubleClick);
-
-        // 输入框 focus 时格子区高亮
-        // v3 bug fix: removed duplicate const declaration
+        if (savedText) { inputTextDiv.innerText = savedText; }
+        else { inputTextDiv.innerText = defaultText; }
         const gridContainer = document.getElementById('grid-container');
         inputTextDiv.addEventListener('focus', () => gridContainer.classList.add('focus-highlight'));
         inputTextDiv.addEventListener('blur', () => gridContainer.classList.remove('focus-highlight'));
-      } catch (error) {
-        showError(`加载失败: ${error.message}`);
-      }
+        document.getElementById('grid-container').addEventListener('dblclick', handleGridItemDoubleClick);
+        if (typeof ResizeObserver !== 'undefined') {
+          const resizeObserver = new ResizeObserver(() => {
+            isResizing = true;
+            clearTimeout(resizeEndTimeout);
+            resizeEndTimeout = setTimeout(() => {
+              isResizing = false;
+              if (autoInputEnabled) { distributeTextWithDelay(); }
+            }, 200);
+          });
+          resizeObserver.observe(inputTextDiv);
+        }
+        requestAnimationFrame(() => {
+          try { highlightDirectives(); } catch (e) { console.warn('高亮指令失败:', e.message); }
+          requestAnimationFrame(() => {
+            try { distributeText(); } catch (e) { console.warn('初始渲染失败:', e.message); }
+          });
+        });
+      } catch (error) { showError(`加载失败: ${error.message}`); }
     };
 
     function adjustTextarea(action) {
@@ -1318,31 +1234,20 @@
         const step = 20;
         const currentWidth = parseInt(window.getComputedStyle(inputTextDiv).width, 10);
         const currentHeight = parseInt(window.getComputedStyle(inputTextDiv).height, 10);
-
-        if (action === 'narrow') {
-          inputTextDiv.style.width = `${Math.max(100, currentWidth - step)}px`;
-        } else if (action === 'wide') {
-          inputTextDiv.style.width = `${currentWidth + step}px`;
-        } else if (action === 'short') {
-          inputTextDiv.style.height = `${Math.max(100, currentHeight - step)}px`;
-        } else if (action === 'tall') {
-          inputTextDiv.style.height = `${currentHeight + step}px`;
-        }
-      } catch (error) {
-        showError(`调整文本框大小失败: ${error.message}`);
-      }
+        if (action === 'narrow') { inputTextDiv.style.width = `${Math.max(100, currentWidth - step)}px`; }
+        else if (action === 'wide') { inputTextDiv.style.width = `${currentWidth + step}px`; }
+        else if (action === 'short') { inputTextDiv.style.height = `${Math.max(100, currentHeight - step)}px`; }
+        else if (action === 'tall') { inputTextDiv.style.height = `${currentHeight + step}px`; }
+      } catch (error) { showError(`调整文本框大小失败: ${error.message}`); }
     }
 
-    // 6. 字号调节同步（输入区 + 格子区）
     function adjustFontSize(delta) {
       try {
         const root = document.documentElement;
         const current = parseFloat(getComputedStyle(root).getPropertyValue('--content-font-size')) || 18;
         const newSize = Math.max(12, Math.min(32, current + delta));
         root.style.setProperty('--content-font-size', newSize + 'px');
-      } catch (error) {
-        showError(`调整字号失败: ${error.message}`);
-      }
+      } catch (error) { showError(`调整字号失败: ${error.message}`); }
     }
 
     function resetTextarea() {
@@ -1350,41 +1255,25 @@
         const inputTextDiv = document.getElementById('input-text');
         inputTextDiv.style.width = initialWidth;
         inputTextDiv.style.height = initialHeight;
-      } catch (error) {
-        showError(`重置文本框失败: ${error.message}`);
-      }
+      } catch (error) { showError(`重置文本框失败: ${error.message}`); }
     }
 
-
-    
-    /* ---------- P1-4: Word count target ---------- */
     let countTarget = 0;
-    
+
     function updateCountTarget() {
       const input = document.getElementById('count-target');
       const val = parseInt(input.value, 10);
       countTarget = isNaN(val) || val < 0 ? 0 : val;
-      
-      // 保存目标
       try {
-        if (countTarget > 0) {
-          localStorage.setItem('countTarget', String(countTarget));
-        } else {
-          localStorage.removeItem('countTarget');
-        }
-      } catch (e) {
-        console.warn('无法保存字数目标:', e.message);
-      }
-      
-      // 立即刷新显示
+        if (countTarget > 0) { localStorage.setItem('countTarget', String(countTarget)); }
+        else { localStorage.removeItem('countTarget'); }
+      } catch (e) { console.warn('无法保存字数目标:', e.message); }
       const countDisplay = document.getElementById('count-display');
       const currentText = countDisplay.innerText;
       const match = currentText.match(/表格计数:\s*(\d+)/);
-      if (match) {
-        updateCountDisplay(parseInt(match[1], 10));
-      }
+      if (match) { updateCountDisplay(parseInt(match[1], 10)); }
     }
-    
+
     function loadCountTarget() {
       try {
         const saved = localStorage.getItem('countTarget');
@@ -1393,36 +1282,23 @@
           const input = document.getElementById('count-target');
           if (input) input.value = countTarget;
         }
-      } catch (e) {
-        console.warn('无法读取字数目标:', e.message);
-      }
+      } catch (e) { console.warn('无法读取字数目标:', e.message); }
     }
-    
+
     function updateCountDisplay(gridIndex) {
       const countDisplay = document.getElementById('count-display');
       if (!countDisplay) return;
-      
       if (countTarget > 0) {
         const pct = Math.round((gridIndex / countTarget) * 100);
         const over = gridIndex > countTarget;
         countDisplay.innerText = `表格计数: ${gridIndex} / ${countTarget} (${pct}%)`;
-        if (over) {
-          countDisplay.classList.add('over-target');
-        } else {
-          countDisplay.classList.remove('over-target');
-        }
+        if (over) { countDisplay.classList.add('over-target'); }
+        else { countDisplay.classList.remove('over-target'); }
       } else {
         countDisplay.innerText = `表格计数: ${gridIndex}`;
         countDisplay.classList.remove('over-target');
       }
     }
-    
-    
-    /* ---------- P1-5: Performance helpers ---------- */
-    // distributeTextWithDelay 中已集成基于文本长度的动态延迟
-
-    /* 页面加载完毕后，立即填充已有文本（含本地存储恢复） */
-    distributeText();
   </script>
 </body>
 </html>
