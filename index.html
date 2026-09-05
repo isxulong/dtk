@@ -94,13 +94,14 @@
         display: none !important;
       }
       body {
+        display: block !important;
         width: 100%;
         height: auto;
         margin: 0;
         padding: 0;
         box-sizing: border-box;
       }
-      .container { margin-top: 0; }
+      .container { margin-top: 0; overflow: visible; }
       .container .grid-container {
         width: 100%;
         max-width: 100%;
@@ -108,6 +109,7 @@
         padding: 0;
         grid-template-columns: repeat(25, minmax(0, 1fr));
         grid-template-rows: auto;
+        overflow: visible;
       }
       .grid-container .grid-item {
         box-sizing: border-box;
@@ -116,6 +118,8 @@
         height: auto;
         padding: 1px;
         font-size: 17px;
+        break-inside: avoid;
+        page-break-inside: avoid;
       }
       .grid-container .grid-item:nth-child(100n)::after {
         right: 0;
@@ -680,9 +684,9 @@
       if (!autoInputEnabled) return;
       
       const inputTextDiv = document.getElementById('input-text');
-      const textLen = inputTextDiv.innerText.length;
-      // 长文本性能保守优化：超过2000字符增加延迟，避免频繁全量重建
-      const delayMs = textLen > 2000 ? 600 : (textLen > 800 ? 400 : 300);
+      // v7 fix: 移除基于文本长度的延迟惩罚，统一使用固定短延迟
+      // 文本越长用户越需要快速反馈，不应反向增加延迟
+      const delayMs = 80;
       
       updateTimeout = setTimeout(() => {
         const caretPos = saveCaretPosition(inputTextDiv);
@@ -691,7 +695,6 @@
           distributeText();
           saveToLocalStorage();
           highlightDirectives(); // 更新高亮
-          // v5 fix: removed undoHistory.length = 0 to keep undo working after auto-input
         } catch (error) {
           showError(`文本处理失败: ${error.message}`);
         } finally {
@@ -841,33 +844,147 @@
       return gridIndex;
     }
 
+    // v7 fix: 新增 computeGridContent —— 纯计算函数，不操作 DOM
+    // 将 fillGridItems 的逻辑提取为返回数组，便于批量 DOM 更新
+    function computeGridContent(text, maxItems) {
+      const result = [];
+      let gridIndex = 0;
+      let i = 0;
+
+      while (i < text.length && gridIndex < maxItems) {
+        if (text[i] === '\n') {
+          if (gridIndex % GRID_COLUMNS_PER_ROW !== 0) {
+            gridIndex = Math.floor(gridIndex / GRID_COLUMNS_PER_ROW) * GRID_COLUMNS_PER_ROW + GRID_COLUMNS_PER_ROW;
+          }
+          i++;
+        } else if (/[a-zA-Z0-9]/.test(text[i]) && /[a-zA-Z0-9.]/.test(text[i + 1])) {
+          result[gridIndex] = { text: text.substring(i, i + 2), sourceIndex: i, isSpaceDirective: false };
+          gridIndex++;
+          i += 2;
+        } else if (text[i] === '+') {
+          if (/\d/.test(text[i + 1])) {
+            let j = i + 1;
+            let validDirective = true;
+            while (j < text.length && text[j] !== '+') {
+              if (!/\d/.test(text[j])) {
+                validDirective = false;
+                break;
+              }
+              j++;
+            }
+            if (validDirective && j < text.length && text[j] === '+') {
+              const numSpaces = Math.min(parseInt(text.substring(i + 1, j), 10), MAX_DIRECTIVE_SPACES);
+              for (let k = 0; k < numSpaces && gridIndex < maxItems; k++) {
+                result[gridIndex] = { text: ' ', sourceIndex: i, isSpaceDirective: true };
+                gridIndex++;
+              }
+              i = j + 1;
+            } else {
+              result[gridIndex] = { text: text[i], sourceIndex: i, isSpaceDirective: false };
+              gridIndex++;
+              i++;
+            }
+          } else {
+            result[gridIndex] = { text: text[i], sourceIndex: i, isSpaceDirective: false };
+            gridIndex++;
+            i++;
+          }
+        } else {
+          // 行首标点避头，排除省略号和破折号
+          if (gridIndex > 0 && gridIndex % GRID_COLUMNS_PER_ROW === 0
+              && /[，。！？；：'""、）》,.!?;:]/.test(text[i])
+              && text[i] !== '…' && text[i] !== '—') {
+            if (result[gridIndex - 1]) {
+              result[gridIndex - 1].text += text[i];
+            }
+          }
+          // 引号后标点合并，同样排除省略号和破折号
+          else if (gridIndex > 0
+              && result[gridIndex - 1] && /[》""]/.test(result[gridIndex - 1].text)
+              && /[、，。：；？！,.?!;:]/.test(text[i])
+              && text[i] !== '…' && text[i] !== '—') {
+            result[gridIndex - 1].text += text[i];
+          }
+          else {
+            result[gridIndex] = { text: text[i], sourceIndex: i, isSpaceDirective: false };
+            gridIndex++;
+          }
+          i++;
+        }
+      }
+
+      return { result, gridIndex };
+    }
+
     function distributeText() {
       try {
         const inputTextDiv = document.getElementById('input-text');
         const text = inputTextDiv.innerText; // 获取纯文本内容
         const gridContainer = document.getElementById('grid-container');
-        gridContainer.innerHTML = '';
-        
-        
-        // 性能优化：使用拆分后的函数
+
+        // v7 fix: 增量更新 —— 不再 innerHTML='' 全量清空重建
         const effectiveLength = calculateEffectiveLength(text);
-        
-        // 创建网格
         const numRows = Math.ceil(effectiveLength / GRID_COLUMNS_PER_ROW);
         const numItems = numRows * GRID_COLUMNS_PER_ROW;
-        const fragment = createGridItems(numItems);
-        gridContainer.appendChild(fragment);
-        
-        // 填充文本到网格
-        const gridItems = document.querySelectorAll('.grid-item');
-        const gridIndex = fillGridItems(text, gridItems);
-        
+
+        // 1) 增量管理格子数量：只增删差异部分
+        const currentCount = gridContainer.childElementCount;
+        if (currentCount > numItems) {
+          const toRemove = currentCount - numItems;
+          for (let i = 0; i < toRemove; i++) {
+            gridContainer.removeChild(gridContainer.lastChild);
+          }
+        } else if (currentCount < numItems) {
+          const fragment = createGridItems(numItems - currentCount);
+          gridContainer.appendChild(fragment);
+        }
+
+        // 2) 纯计算目标内容（无 DOM 操作）
+        const { result, gridIndex } = computeGridContent(text, numItems);
+
+        // 3) 批量更新 DOM：只修改发生变化的格子
+        const gridItems = gridContainer.children;
+        for (let i = 0; i < gridIndex; i++) {
+          const item = gridItems[i];
+          const r = result[i];
+          // v7 fix: 换行跳过的格子 result 可能为 undefined，按空白处理
+          if (!r) {
+            if (item.innerText !== '' || item.classList.contains('space-directive') || item.dataset.sourceIndex) {
+              item.innerText = '';
+              item.removeAttribute('data-source-index');
+              item.classList.remove('space-directive');
+            }
+            continue;
+          }
+          if (item.innerText !== r.text) {
+            item.innerText = r.text;
+          }
+          if (item.dataset.sourceIndex !== String(r.sourceIndex)) {
+            item.dataset.sourceIndex = r.sourceIndex;
+          }
+          if (r.isSpaceDirective) {
+            item.classList.add('space-directive');
+          } else {
+            item.classList.remove('space-directive');
+          }
+        }
+
+        // 4) 清空未使用的格子（复用，不销毁）
+        for (let i = gridIndex; i < gridItems.length; i++) {
+          const item = gridItems[i];
+          if (item.innerText !== '' || item.classList.contains('space-directive') || item.dataset.sourceIndex) {
+            item.innerText = '';
+            item.removeAttribute('data-source-index');
+            item.classList.remove('space-directive');
+          }
+        }
+
         // 更新字数显示（含目标进度）
         updateCountDisplay(gridIndex);
-        
-        // 保存到撤销历史
-        addToUndoHistory(text);
-        
+
+        // v7 fix: 撤销历史节流 —— 避免高频输入时连续保存大字符串
+        throttledAddToUndoHistory(text);
+
         // 隐藏之前的错误信息
         document.getElementById('error-message').style.display = 'none';
       } catch (error) {
@@ -875,6 +992,18 @@
         showError(`处理文本时发生错误: ${error.message}\n请检查特殊字符或简化文本`);
         document.getElementById('grid-container').innerHTML = '<div class="error">生成失败，请尝试简化文本</div>';
       }
+    }
+
+    // v7 fix: 撤销历史节流 —— 避免高频输入时连续保存完整大字符串
+    let undoThrottleTimer = null;
+    let lastUndoCandidate = null;
+
+    function throttledAddToUndoHistory(text) {
+      lastUndoCandidate = text;
+      clearTimeout(undoThrottleTimer);
+      undoThrottleTimer = setTimeout(() => {
+        addToUndoHistory(lastUndoCandidate);
+      }, 400);
     }
 
     // 新增：添加到撤销历史
@@ -1152,10 +1281,9 @@
         const inputTextDiv = document.getElementById('input-text');
         
         // 设置默认文本（申论/作文示例）
-        const defaultText = `+6+以奋斗之姿 赴时代之约
+        const defaultText = `+4+以奋斗之姿 赴时代之约
 +2+时代的浪潮奔涌向前，每一朵浪花都承载着无数奋斗者的梦想与汗水。站在新的历史节点上，我们既是见证者，更是参与者。唯有以奋斗为笔，以实干为墨，方能书写无愧于时代的青春华章。
-+2+奋斗是青春最亮丽的底色。"青春须早为，岂能长少年。"古往今来，无数先辈以奋斗诠释生命的价值。"
-+2+一、坚定理想信念。理想信念是精神之"钙"，指引我们在迷茫中找到方向，在困厄中坚守初心。
++2+奋斗是青春最亮丽的底色。"青春须早为，岂能长少年。"古往今来，无数先辈以奋斗诠释生命的价值。"+2+一、坚定理想信念。理想信念是精神之"钙"，指引我们在迷茫中找到方向，在困厄中坚守初心。
 +2+二、练就过硬本领。空谈误国，实干兴邦。我们要在学习中增长知识，在实践中锤炼能力。
 +2+三、勇于担当作为。面对时代的考题，我们要敢于迎难而上，在攻坚克难中彰显青年担当。
 +2+"自信人生二百年，会当水击三千里。"让我们以奋斗之姿，赴时代之约，在实现中华民族伟大复兴的征程中贡献青春力量！`;
