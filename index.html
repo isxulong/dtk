@@ -131,10 +131,13 @@
       }
     }
 
-    /* ---------- 2. 格子线颜色降饱和 ---------- */
+    /* ---------- 2. 格子线颜色降饱和；标记类背景统一走 CSS 变量（打印态强制置空） ---------- */
     :root {
       --grid-color: #c62828;
       --content-font-size: 18px;
+      --marker-space-directive-bg: rgba(198, 40, 40, 0.05);
+      --marker-layout-space-bg: rgba(198, 40, 40, 0.02);
+      --marker-merge-eol-bg: rgba(255, 235, 59, 0.35);
     }
     .grid-container {
       display: grid;
@@ -170,16 +173,13 @@
     .grid-item:hover {
       background-color: #f0f8ff;
     }
-    /* 7. +N+ 空格视觉标记 */
+    /* 7. +N+ 空格视觉标记（缩进阴影终态：纯色唯一默认，斜纹退役） */
     .grid-item.space-directive {
-      background-color: #f5f5f5;
-      background-image: repeating-linear-gradient(
-        45deg,
-        transparent,
-        transparent 4px,
-        rgba(198, 40, 40, 0.08) 4px,
-        rgba(198, 40, 40, 0.08) 8px
-      );
+      background-color: var(--marker-space-directive-bg);
+    }
+    /* F1 允许例外可视化：行末无格时标点与末字同格（考试允许），淡黄底 + tooltip */
+    .grid-item.merge-eol {
+      background-color: var(--marker-merge-eol-bg);
     }
     .grid-item:nth-child(25n) { border-right: 1px solid var(--grid-color); }
     .grid-item:nth-child(100n) {
@@ -394,13 +394,19 @@
     }
     .grid-item.layout-space {
       /* 排版空位：视觉上为空，轻量背景提示 */
-      background-color: rgba(198, 40, 40, 0.02);
+      background-color: var(--marker-layout-space-bg);
     }
     @media print {
       .grid-item.wide-symbol,
       .grid-item.wide-second {
         break-inside: avoid;
         page-break-inside: avoid;
+      }
+      /* 打印纯净：一切标记类背景（淡底/黄标/未来新增标记类）强制无填充 */
+      .grid-container .grid-item {
+        background: none !important;
+        background-color: transparent !important;
+        background-image: none !important;
       }
     }
   </style>
@@ -444,11 +450,14 @@
       </div>
     </div>
     <div class="grid-container" id="grid-container" role="grid" aria-label="答题格子纸"></div>
-    <div class="count-annotation" id="count-annotation">「表格计数」= 实际占用格子数（含指令空格、合并字符与排版空位），与纯字符数不同</div>
+    <div class="count-annotation" id="count-annotation">「表格计数」= 实际占用格子数（含指令空格、行末合并格与排版空位），与纯字符数不同<br>申论规则：标点独占一格；行末无格时与末字同格（允许）；标点不出现在行首（前引号等除外）</div>
   </div>
-  <script>
-    const GRID_COLUMNS_PER_ROW = 25;
-    const MAX_DIRECTIVE_SPACES = 500;
+  <script type="module">
+    // ESM 收窄拆分（终局裁决 E）：排版引擎与规则表移入 js/，纯逻辑可被 Node import 测试。
+    // 引用带版本 query（?v=20261012a）防缓存错位；版本号须与 js/ 内文件同批更新。
+    import { GRID_COLUMNS_PER_ROW, computeGridContent, calculateEffectiveLength } from './js/engine.js?v=20261012a';
+    import { DEFAULT_TEXT } from './js/default-text.js?v=20261012a';
+
     const MAX_IMPORT_TEXT_LENGTH = 100000;
     let updateTimeout;
     let autoInputEnabled = true;
@@ -470,10 +479,7 @@
     const BATCH_RENDER_SIZE = 200;
     const LARGE_PASTE_THRESHOLD = 300;
 
-    // v9: 标点分类常量
-    const DOT_PUNCT = /[\u3002\uFF0C\u3001\uFF1B\uFF1A\uFF1F\uFF01.,;:!?]/;
-    const HEAD_FORBIDDEN = /["'\u300F\u300D\)\u3015\uFF3D\]\}\u3011\u00B7\/\-\u2015\uFF5E]/;
-    const TAIL_FORBIDDEN = /["'\u300E\u300C\(\u3014\uFF3B\[\{\u3010\u300A\u3008]/;
+    // v9: 标点分类规则已移至 js/punctuation-rules.js（ESM 拆分，可被 Node import 测试）
 
     function showError(message) {
       const errorElement = document.getElementById('error-message');
@@ -544,6 +550,9 @@
       const nodesToReplace = [];
       while (walker.nextNode()) {
         const node = walker.currentNode;
+        // 走查19 修复：已在 .directive span 内的文本节点直接跳过，消除 span 无限嵌套
+        if (node.parentElement && node.parentElement.classList &&
+            node.parentElement.classList.contains('directive')) { continue; }
         if (directiveRegex.test(node.nodeValue)) { nodesToReplace.push(node); }
       }
       for (const node of nodesToReplace) {
@@ -662,210 +671,8 @@
       } catch (error) { console.warn('本地存储不可用:', error.message); }
     }
 
-    // v9: 辅助函数 —— 找到前一个有效内容格
-    function findPrevContentCell(result, startIndex) {
-      for (let idx = startIndex; idx >= 0; idx--) {
-        const cell = result[idx];
-        if (cell && !cell.isLayoutSpace && !cell.isWideSecond && cell.text !== '') {
-          return idx;
-        }
-      }
-      return -1;
-    }
-
-    // v9: 辅助函数 —— 放置宽符号（处理跨行禁则）
-    function placeWideSymbol(result, symbol, width, gridIndex, sourceIndex, maxItems) {
-      const posInRow = gridIndex % GRID_COLUMNS_PER_ROW;
-      const remaining = GRID_COLUMNS_PER_ROW - posInRow;
-      // 如果当前不在行首且剩余空间不足，先填满当前行（排版空位）
-      if (posInRow !== 0 && remaining < width) {
-        while (gridIndex % GRID_COLUMNS_PER_ROW !== 0 && gridIndex < maxItems) {
-          result[gridIndex] = { text: '', sourceIndex: sourceIndex, isLayoutSpace: true };
-          gridIndex++;
-        }
-      }
-      if (gridIndex >= maxItems) return gridIndex;
-      // 放置符号第一格
-      result[gridIndex] = { text: symbol, sourceIndex: sourceIndex, isWide: true };
-      gridIndex++;
-      // 放置后续占位格
-      for (let w = 1; w < width && gridIndex < maxItems; w++) {
-        result[gridIndex] = { text: '', sourceIndex: sourceIndex, isWideSecond: true };
-        gridIndex++;
-      }
-      return gridIndex;
-    }
-
-    // v9: 重写 computeGridContent —— 包含完整标点排版规则
-    function computeGridContent(text, maxItems) {
-      const result = [];
-      let gridIndex = 0;
-      let i = 0;
-
-      while (i < text.length && gridIndex < maxItems) {
-        // 1. 换行符
-        if (text[i] === '\n') {
-          if (gridIndex % GRID_COLUMNS_PER_ROW !== 0) {
-            gridIndex = Math.floor(gridIndex / GRID_COLUMNS_PER_ROW) * GRID_COLUMNS_PER_ROW + GRID_COLUMNS_PER_ROW;
-          }
-          i++;
-          continue;
-        }
-
-        // 2. +N+ 指令
-        if (text[i] === '+') {
-          if (/\d/.test(text[i + 1])) {
-            let j = i + 1;
-            let validDirective = true;
-            while (j < text.length && text[j] !== '+') {
-              if (!/\d/.test(text[j])) { validDirective = false; break; }
-              j++;
-            }
-            if (validDirective && j < text.length && text[j] === '+') {
-              const numSpaces = Math.min(parseInt(text.substring(i + 1, j), 10), MAX_DIRECTIVE_SPACES);
-              for (let k = 0; k < numSpaces && gridIndex < maxItems; k++) {
-                result[gridIndex] = { text: ' ', sourceIndex: i, isSpaceDirective: true };
-                gridIndex++;
-              }
-              i = j + 1;
-              continue;
-            } else {
-              result[gridIndex] = { text: text[i], sourceIndex: i, isSpaceDirective: false };
-              gridIndex++; i++;
-              continue;
-            }
-          } else {
-            result[gridIndex] = { text: text[i], sourceIndex: i, isSpaceDirective: false };
-            gridIndex++; i++;
-            continue;
-          }
-        }
-
-        // 3. 字母数字合并
-        if (/[a-zA-Z0-9]/.test(text[i]) && /[a-zA-Z0-9.]/.test(text[i + 1])) {
-          result[gridIndex] = { text: text.substring(i, i + 2), sourceIndex: i, isSpaceDirective: false };
-          gridIndex++; i += 2;
-          continue;
-        }
-
-        // 4. 叠用标点（全角与半角）
-        // 4.1 ?! / !?（1格，挤格）
-        if ((text[i] === '?' && text[i+1] === '!') || (text[i] === '!' && text[i+1] === '?') ||
-            (text[i] === '\uFF1F' && text[i+1] === '\uFF01') || (text[i] === '\uFF01' && text[i+1] === '\uFF1F')) {
-          const combo = text.substring(i, i + 2);
-          if (gridIndex > 0) {
-            const prev = findPrevContentCell(result, gridIndex - 1);
-            if (prev >= 0) { result[prev].text += combo; i += 2; continue; }
-          }
-          result[gridIndex] = { text: combo, sourceIndex: i };
-          gridIndex += 1; i += 2;
-          continue;
-        }
-        // 4.2 ??? / !!!（2格宽符号）
-        if ((text[i] === '?' && text[i+1] === '?' && text[i+2] === '?') ||
-            (text[i] === '!' && text[i+1] === '!' && text[i+2] === '!') ||
-            (text[i] === '\uFF1F' && text[i+1] === '\uFF1F' && text[i+2] === '\uFF1F') ||
-            (text[i] === '\uFF01' && text[i+1] === '\uFF01' && text[i+2] === '\uFF01')) {
-          gridIndex = placeWideSymbol(result, text.substring(i, i + 3), 2, gridIndex, i, maxItems);
-          i += 3;
-          continue;
-        }
-        // 4.3 ?? / !!（1格，挤格）
-        if ((text[i] === '?' && text[i+1] === '?') || (text[i] === '!' && text[i+1] === '!') ||
-            (text[i] === '\uFF1F' && text[i+1] === '\uFF1F') || (text[i] === '\uFF01' && text[i+1] === '\uFF01')) {
-          const combo = text.substring(i, i + 2);
-          if (gridIndex > 0) {
-            const prev = findPrevContentCell(result, gridIndex - 1);
-            if (prev >= 0) { result[prev].text += combo; i += 2; continue; }
-          }
-          result[gridIndex] = { text: combo, sourceIndex: i };
-          gridIndex += 1; i += 2;
-          continue;
-        }
-
-        // 5. 破折号 ——（2格宽符号）
-        if (text[i] === '\u2014' && text[i+1] === '\u2014') {
-          gridIndex = placeWideSymbol(result, '\u2014\u2014', 2, gridIndex, i, maxItems);
-          i += 2;
-          continue;
-        }
-        // 单个破折号 —（1格）
-        if (text[i] === '\u2014') {
-          result[gridIndex] = { text: '\u2014', sourceIndex: i };
-          gridIndex++; i++;
-          continue;
-        }
-
-        // 6. 省略号 ……（2格宽符号）
-        if (text[i] === '\u2026' && text[i+1] === '\u2026') {
-          gridIndex = placeWideSymbol(result, '\u2026\u2026', 2, gridIndex, i, maxItems);
-          i += 2;
-          continue;
-        }
-        // 单个省略号字符 …（1格）
-        if (text[i] === '\u2026') {
-          result[gridIndex] = { text: '\u2026', sourceIndex: i };
-          gridIndex++; i++;
-          continue;
-        }
-
-        // 7. 行末禁则（避尾）：前引号、前括号、前书名号不能出现在行末
-        if (TAIL_FORBIDDEN.test(text[i])) {
-          const posInRow = gridIndex % GRID_COLUMNS_PER_ROW;
-          if (posInRow === GRID_COLUMNS_PER_ROW - 1) {
-            // 在行末，留排版空位后推至下一行
-            result[gridIndex] = { text: '', sourceIndex: i, isLayoutSpace: true };
-            gridIndex++;
-            result[gridIndex] = { text: text[i], sourceIndex: i };
-            gridIndex++; i++;
-            continue;
-          }
-        }
-
-        // 8. 点号挤格：与前一字符共占一格
-        if (DOT_PUNCT.test(text[i])) {
-          if (gridIndex > 0) {
-            const prev = findPrevContentCell(result, gridIndex - 1);
-            if (prev >= 0) {
-              result[prev].text += text[i];
-              i++;
-              continue;
-            }
-          }
-          // 无前一内容格（如全文第一个字符就是点号），独占一格
-          result[gridIndex] = { text: text[i], sourceIndex: i };
-          gridIndex++; i++;
-          continue;
-        }
-
-        // 9. 行首禁则（避头）：后引号、后括号、间隔号、分隔号、连接号不能出现在行首
-        if (gridIndex > 0 && gridIndex % GRID_COLUMNS_PER_ROW === 0 && HEAD_FORBIDDEN.test(text[i])) {
-          const prev = findPrevContentCell(result, gridIndex - 1);
-          if (prev >= 0) {
-            result[prev].text += text[i];
-            i++;
-            continue;
-          }
-          //  fallback: 独占一格（理论上不会走到这里）
-          result[gridIndex] = { text: text[i], sourceIndex: i };
-          gridIndex++; i++;
-          continue;
-        }
-
-        // 10. 普通字符：独占一格
-        result[gridIndex] = { text: text[i], sourceIndex: i };
-        gridIndex++; i++;
-      }
-
-      return { result, gridIndex };
-    }
-
-    // v9: 重写 calculateEffectiveLength 以匹配新 computeGridContent 逻辑
-    function calculateEffectiveLength(text) {
-      // 用 computeGridContent 计算精确长度（maxItems 设足够大）
-      const { gridIndex } = computeGridContent(text, Number.MAX_SAFE_INTEGER);
-      return gridIndex;
-    }
+    // 排版引擎（findPrevContentCell / placeWideSymbol / computeGridContent /
+    // calculateEffectiveLength）已移至 js/engine.js，经顶部 import 引入
 
     function createGridItems(numItems) {
       const fragment = document.createDocumentFragment();
@@ -891,6 +698,7 @@
             item.innerText = '';
             item.removeAttribute('data-source-index');
             item.className = 'grid-item';
+            item.removeAttribute('title');
           }
           continue;
         }
@@ -904,7 +712,15 @@
         if (r.isWide) cls += ' wide-symbol';
         if (r.isWideSecond) cls += ' wide-second';
         if (r.isLayoutSpace) cls += ' layout-space';
+        if (r.isMergedEOL) cls += ' merge-eol';
         if (item.className !== cls) { item.className = cls; }
+        // F1 允许例外可视化：行末同格合并格的 tooltip
+        const tip = r.isMergedEOL ? '行末无格，标点与末字同格（考试允许）' : '';
+        if (tip) {
+          if (item.title !== tip) { item.title = tip; }
+        } else if (item.title) {
+          item.removeAttribute('title');
+        }
       }
     }
 
@@ -916,9 +732,14 @@
         const inputTextDiv = document.getElementById('input-text');
         const text = inputTextDiv.innerText;
         const gridContainer = document.getElementById('grid-container');
+        // 渲染竞态加固：任何一次 distribute 都取新一代号，使所有旧的分帧渲染循环立即失效
+        // （否则负增长/同步快速路径不换代号，旧循环会在格子被删减后继续写格子并抛错）
+        const gen = ++renderGeneration;
 
         // 计算内容
-        const { result, gridIndex } = computeGridContent(text, Number.MAX_SAFE_INTEGER);
+        const { result, gridIndex, warnings } = computeGridContent(text, Number.MAX_SAFE_INTEGER);
+        // D5 歧义提示不静默：非平衡直引号等场景给用户一行可见提示
+        if (warnings && warnings.length > 0) { showError(warnings.join('；')); }
         const numRows = Math.ceil(gridIndex / GRID_COLUMNS_PER_ROW);
         const numItems = numRows * GRID_COLUMNS_PER_ROW;
 
@@ -973,8 +794,7 @@
           return;
         }
 
-        // v9: 大文本粘贴 —— 分帧渲染
-        const gen = ++renderGeneration;
+        // v9: 大文本粘贴 —— 分帧渲染（gen 已在函数入口取得）
         isBatchRendering = true;
 
         // 第一批：同步插入前 BATCH_RENDER_SIZE 个新格子，并更新已有格子
@@ -1196,12 +1016,7 @@
         try { savedText = localStorage.getItem('savedText'); }
         catch (e) { console.warn('无法读取本地存储:', e.message); }
         const inputTextDiv = document.getElementById('input-text');
-        const defaultText = `+6+以奋斗之姿 赴时代之约
-+2+时代的浪潮奔涌向前，每一朵浪花都承载着无数奋斗者的梦想与汗水。站在新的历史节点上，我们既是见证者，更是参与者。唯有以奋斗为笔，以实干为墨，方能书写无愧于时代的青春华章。
-+2+奋斗是青春最亮丽的底色。"青春须早为，岂能长少年。"古往今来，无数先辈以奋斗诠释生命的价值。"+2+一、坚定理想信念。理想信念是精神之"钙"，指引我们在迷茫中找到方向，在困厄中坚守初心。
-+2+二、练就过硬本领。空谈误国，实干兴邦。我们要在学习中增长知识，在实践中锤炼能力。
-+2+三、勇于担当作为。面对时代的考题，我们要敢于迎难而上，在攻坚克难中彰显青年担当。
-+2+"自信人生二百年，会当水击三千里。"让我们以奋斗之姿，赴时代之约，在实现中华民族伟大复兴的征程中贡献青春力量！`;
+        const defaultText = DEFAULT_TEXT;
         if (savedText) { inputTextDiv.innerText = savedText; }
         else { inputTextDiv.innerText = defaultText; }
         const gridContainer = document.getElementById('grid-container');
@@ -1299,6 +1114,13 @@
         countDisplay.classList.remove('over-target');
       }
     }
+    // ESM module 作用域内的函数挂到 window，保持既有内联事件处理器（onclick 等）零改动
+    Object.assign(window, {
+      resetTextarea, adjustTextarea, adjustFontSize,
+      distributeTextWithDelay, handleKeyDown, distributeText, highlightDirectives,
+      clearPlusN, clearNewLines, clearSpaces, clearInput,
+      undo, toggleAutoInput, downloadText, importText, updateCountTarget
+    });
   </script>
 </body>
 </html>
