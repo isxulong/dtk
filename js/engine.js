@@ -1,9 +1,10 @@
 /**
  * engine.js —— 申论格子纸排版引擎（纯逻辑，无 DOM 依赖，可被 Node 直接 import 测试）
- * 版本：20261012a（与 index.html 的引用 query 同步，防缓存错位）
+ * 版本：20261013a（与 index.html 的引用 query 同步，防缓存错位）
  *
  * 终局裁决（E）落地口径：
- * - D1 点号默认独占一格，仅落点恰为行首（上一行 25 格已满）时并入末字格（考试允许，F1 黄标）
+ * - D1 点号默认独占一格，仅落点恰为行首（上一行 25 格已满）时并入末字格（考试允许；
+ *   F1 视觉区分已按用户 2026-10-13 真机反馈移除，merge-eol 仅保留标记语义）
  * - D2 半角点号不挤格，随数字字母口径两两并格（保留「1.」序数一格）
  * - D3 叠用标点（?!/??/!! 等）组合自身独占一格，行首场景避头并格
  * - D5 直引号按全文配对预扫描确定性分类开/闭，非平衡文本行末兜底按收引号并格，歧义登记 warning
@@ -18,7 +19,7 @@ import {
   STRAIGHT_QUOTES,
   classifyQuotes,
   forbiddenRole
-} from './punctuation-rules.js?v=20261012a';
+} from './punctuation-rules.js?v=20261013a';
 
 export { GRID_COLUMNS_PER_ROW, MAX_DIRECTIVE_SPACES };
 

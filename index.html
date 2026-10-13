@@ -137,7 +137,6 @@
       --content-font-size: 18px;
       --marker-space-directive-bg: rgba(198, 40, 40, 0.05);
       --marker-layout-space-bg: rgba(198, 40, 40, 0.02);
-      --marker-merge-eol-bg: rgba(255, 235, 59, 0.35);
     }
     .grid-container {
       display: grid;
@@ -177,10 +176,8 @@
     .grid-item.space-directive {
       background-color: var(--marker-space-directive-bg);
     }
-    /* F1 允许例外可视化：行末无格时标点与末字同格（考试允许），淡黄底 + tooltip */
-    .grid-item.merge-eol {
-      background-color: var(--marker-merge-eol-bg);
-    }
+    /* F1 视觉区分已按用户 2026-10-13 真机反馈移除（行末同格合并是自然排版，无需提醒）。
+       .merge-eol 类名保留供测试/逻辑引用，不携带任何视觉样式。 */
     .grid-item:nth-child(25n) { border-right: 1px solid var(--grid-color); }
     .grid-item:nth-child(100n) {
       border-right: 2px solid var(--grid-color);
@@ -454,9 +451,9 @@
   </div>
   <script type="module">
     // ESM 收窄拆分（终局裁决 E）：排版引擎与规则表移入 js/，纯逻辑可被 Node import 测试。
-    // 引用带版本 query（?v=20261012a）防缓存错位；版本号须与 js/ 内文件同批更新。
-    import { GRID_COLUMNS_PER_ROW, computeGridContent, calculateEffectiveLength } from './js/engine.js?v=20261012a';
-    import { DEFAULT_TEXT } from './js/default-text.js?v=20261012a';
+    // 引用带版本 query（?v=20261013a）防缓存错位；版本号须与 js/ 内文件同批更新。
+    import { GRID_COLUMNS_PER_ROW, computeGridContent, calculateEffectiveLength } from './js/engine.js?v=20261013a';
+    import { DEFAULT_TEXT } from './js/default-text.js?v=20261013a';
 
     const MAX_IMPORT_TEXT_LENGTH = 100000;
     let updateTimeout;
@@ -714,13 +711,9 @@
         if (r.isLayoutSpace) cls += ' layout-space';
         if (r.isMergedEOL) cls += ' merge-eol';
         if (item.className !== cls) { item.className = cls; }
-        // F1 允许例外可视化：行末同格合并格的 tooltip
-        const tip = r.isMergedEOL ? '行末无格，标点与末字同格（考试允许）' : '';
-        if (tip) {
-          if (item.title !== tip) { item.title = tip; }
-        } else if (item.title) {
-          item.removeAttribute('title');
-        }
+        // F1 视觉区分（淡黄底 + tooltip）已按用户 2026-10-13 真机反馈移除；
+        // merge-eol 类名保留供测试/逻辑引用，不携带任何视觉差异。此处仅做 title 兜底清理。
+        if (item.title) { item.removeAttribute('title'); }
       }
     }
 
@@ -948,44 +941,71 @@
       } catch (error) { showError(`导入功能出错: ${error.message}`); }
     }
 
-    function setCaretToPosition(container, position) {
-      const textNodes = getTextNodes(container);
+    // 双击定位修复（20261013a，2026-10-13 真机反馈）：
+    // innerText setter 会把换行符写入为 <br> 元素（载入 localStorage 存档 / 导入 / 清除系
+    // 按钮均走此路径），而排版引擎的 sourceIndex 基于 innerText 坐标（每个 \n 计 1 字符）。
+    // 此前实现只走文本节点、跳过 <br>，导致光标落点随前方换行数逐次偏后（前文正常、
+    // 后文累积偏后）。现按 innerText 坐标遍历：<br> 计 1 字符，与引擎 sourceIndex 对齐。
+    function findCaretPoint(container, position) {
       let total = 0;
-      for (let node of textNodes) {
-        const length = node.nodeValue.length;
-        if (position >= total && position <= total + length) {
-          const range = document.createRange();
-          range.setStart(node, position - total);
-          range.collapse(true);
-          const selection = window.getSelection();
-          selection.removeAllRanges();
-          selection.addRange(range);
-          container.focus();
-          const highlight = document.createElement('span');
-          highlight.className = 'cursor-highlight';
-          highlight.appendChild(range.extractContents());
-          range.insertNode(highlight);
-          setTimeout(() => {
-            if (highlight.parentNode) {
-              const parent = highlight.parentNode;
-              while (highlight.firstChild) { parent.insertBefore(highlight.firstChild, highlight); }
-              parent.removeChild(highlight);
+      let found = null;
+      (function visit(node) {
+        if (found) return;
+        for (const child of node.childNodes) {
+          if (found) return;
+          if (child.nodeType === Node.TEXT_NODE) {
+            const length = child.nodeValue.length;
+            if (position <= total + length) {
+              found = { node: child, offset: position - total };
+              return;
             }
-          }, 1000);
-          return;
+            total += length;
+          } else if (child.nodeType === Node.ELEMENT_NODE && child.tagName === 'BR') {
+            if (position === total) {
+              found = { beforeBr: child };
+              return;
+            }
+            if (position <= total + 1) {
+              found = { afterBr: child };
+              return;
+            }
+            total += 1;
+          } else if (child.nodeType === Node.ELEMENT_NODE) {
+            visit(child);
+          }
         }
-        total += length;
+      })(container);
+      return found;
+    }
+
+    function setCaretToPosition(container, position) {
+      const point = findCaretPoint(container, position);
+      const range = document.createRange();
+      if (point) {
+        if (point.beforeBr !== undefined) { range.setStartBefore(point.beforeBr); }
+        else if (point.afterBr !== undefined) { range.setStartAfter(point.afterBr); }
+        else { range.setStart(point.node, point.offset); }
+      } else {
+        // 超出内容总长（含尾部换行）：置于容器末尾
+        range.selectNodeContents(container);
+        range.collapse(false);
       }
-      if (textNodes.length > 0) {
-        const lastNode = textNodes[textNodes.length - 1];
-        const range = document.createRange();
-        range.setStart(lastNode, lastNode.nodeValue.length);
-        range.collapse(true);
-        const selection = window.getSelection();
-        selection.removeAllRanges();
-        selection.addRange(range);
-        container.focus();
-      }
+      range.collapse(true);
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      container.focus();
+      const highlight = document.createElement('span');
+      highlight.className = 'cursor-highlight';
+      highlight.appendChild(range.extractContents());
+      range.insertNode(highlight);
+      setTimeout(() => {
+        if (highlight.parentNode) {
+          const parent = highlight.parentNode;
+          while (highlight.firstChild) { parent.insertBefore(highlight.firstChild, highlight); }
+          parent.removeChild(highlight);
+        }
+      }, 1000);
     }
 
     function handleGridItemDoubleClick(event) {

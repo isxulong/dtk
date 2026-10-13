@@ -4,6 +4,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { computeGridContent } from '../js/engine.js';
 import puppeteer from '/home/gem/.aily/.cli/npm/node_modules/puppeteer-core/lib/puppeteer/puppeteer-core.js';
 
 // ---- in-process static server（规避沙箱后台进程限制）----
@@ -101,9 +102,9 @@ try {
 
   // ---------- J02 ----------
   const r02 = await runCase('\u9732'.repeat(25) + '\u3002');
-  record('J02 25字+。 「露。」并入格25 + merge-eol + tooltip',
+  record('J02 25字+。 「露。」并入格25 + merge-eol 标记（视觉区分已移除，title 为空）',
     r02.cells[24].t === '\u9732\u3002' && r02.cells[24].cls.includes('merge-eol') && r02.count === 25
-      && r02.cells[24].title.includes('\u884c\u672b\u65e0\u683c'),
+      && r02.cells[24].title === '',
     'cell25="' + r02.cells[24].t + '" cls="' + r02.cells[24].cls + '" count=' + r02.count + ' title="' + r02.cells[24].title + '"');
 
   // ---------- J03 ----------
@@ -191,6 +192,67 @@ try {
     depth.maxDepth <= 1 && depth.directiveCount === 2,
     'maxDepth=' + depth.maxDepth + ' directiveSpans=' + depth.directiveCount);
 
+  // ---------- 双击定位回归（2026-10-13 真机反馈：前文正常、后文随换行累积偏后）----------
+  // 布置文本：前段纯文字 / 换行 / +2+ 指令 / 二次换行 / 25字+。（行末同格合并格）/ 三次换行+指令+末段
+  const dblText = '一二三四五六七八九十' + '\n+2+中段文字测试，' + '\n' + '露'.repeat(25) + '。' + '\n+3+末尾段落的收束句。';
+  const dblEngine = computeGridContent(dblText, Number.MAX_SAFE_INTEGER);
+  const dblMergedIdx = dblEngine.result.findIndex((c) => c && c.isMergedEOL);
+  const dblSdIdx = dblEngine.result.findIndex((c) => c && c.isSpaceDirective);
+  const dblProbes = [
+    { name: '前段首字', idx: 0 },
+    { name: '前段末字', idx: 9 },
+    { name: '换行后指令格', idx: dblSdIdx },
+    { name: '中段末字（1次换行后）', idx: 33 },
+    { name: '二次换行后段首字', idx: 50 },
+    { name: '行末同格合并格', idx: dblMergedIdx },
+    { name: '三次换行后末段首字', idx: 78 },
+    { name: '全文末字', idx: dblEngine.gridIndex - 1 }
+  ];
+  await page.evaluate((t) => {
+    document.getElementById('input-text').innerText = t;
+    window.distributeText();
+    window.highlightDirectives();
+  }, dblText);
+  const dblOut = await page.evaluate((idxs) => {
+    const div = document.getElementById('input-text');
+    const items = Array.from(document.querySelectorAll('#grid-container .grid-item'));
+    function caretIndex() {
+      const sel = window.getSelection();
+      if (!sel.rangeCount) return -1;
+      const range = sel.getRangeAt(0);
+      const pre = document.createRange();
+      pre.selectNodeContents(div);
+      pre.setEnd(range.startContainer, range.startOffset);
+      // innerText 坐标：<br> 计 1 字符（与引擎 sourceIndex 同尺）
+      return pre.toString().length + pre.cloneContents().querySelectorAll('br').length;
+    }
+    return idxs.map((i) => {
+      items[i].dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+      const it = items[i];
+      return {
+        text: it.textContent,
+        src: it.dataset.sourceIndex === undefined ? null : parseInt(it.dataset.sourceIndex, 10),
+        caret: caretIndex()
+      };
+    });
+  }, dblProbes.map((p) => p.idx));
+  for (let k = 0; k < dblProbes.length; k++) {
+    const p = dblProbes[k];
+    const exp = dblEngine.result[p.idx];
+    const got = dblOut[k];
+    record('双击定位·' + p.name + '（格' + (p.idx + 1) + '）',
+      exp && got && got.text === exp.text && got.src === exp.sourceIndex && got.caret === got.src,
+      'expect src=' + (exp ? exp.sourceIndex : 'null') + ' text=' + (exp ? JSON.stringify(exp.text) : 'null')
+        + ' got src=' + got.src + ' caret=' + got.caret + ' text=' + JSON.stringify(got.text));
+  }
+  if (dblMergedIdx < 0 || dblSdIdx < 0) {
+    record('双击定位·布置自检（合并格与指令格均已产生）', false,
+      'mergedIdx=' + dblMergedIdx + ' sdIdx=' + dblSdIdx);
+  } else {
+    record('双击定位·布置自检（合并格与指令格均已产生）', true,
+      'mergedIdx=' + dblMergedIdx + ' sdIdx=' + dblSdIdx + ' gridIndex=' + dblEngine.gridIndex);
+  }
+
   // ---------- CSS 检查（先布置含 space-directive 与 merge-eol 的文本）----------
   const rSetup = await runCase('\u9732'.repeat(25) + '\u3002' + '\n+2+\u6d4b');
   const setupOk = await page.evaluate(() => {
@@ -208,9 +270,15 @@ try {
     const sdStyle = sd ? getComputedStyle(sd).backgroundImage + ' / ' + getComputedStyle(sd).backgroundColor : 'no-element';
     const me = document.querySelector('.grid-item.merge-eol');
     const meBg = me ? getComputedStyle(me).backgroundColor : 'no-element';
-    return { sdStyle, meBg };
+    const meImg = me ? getComputedStyle(me).backgroundImage : 'no-element';
+    const meTitle = me ? (me.getAttribute('title') || '') : 'no-element';
+    const normal = document.querySelector('#grid-container .grid-item:not(.space-directive):not(.merge-eol):not(.layout-space):not(.wide-symbol):not(.wide-second)');
+    const normalBg = normal ? getComputedStyle(normal).backgroundColor : 'no-element';
+    return { sdStyle, meBg, meImg, meTitle, normalBg };
   });
-  record('F1 行末同格合并格淡黄底色', css.meBg.includes('255, 235, 59'), 'bg=' + css.meBg);
+  record('F1 行末同格合并格无背景色差异（按用户 2026-10-13 真机反馈移除视觉区分）',
+    css.meBg === css.normalBg && css.meBg === 'rgba(0, 0, 0, 0)' && css.meImg === 'none' && css.meTitle === '',
+    'meBg=' + css.meBg + ' meImg=' + css.meImg + ' normalBg=' + css.normalBg + ' title=' + JSON.stringify(css.meTitle));
   record('缩进阴影 屏幕态纯色 rgba(198,40,40,0.05) 无斜纹',
     css.sdStyle.includes('rgba(198, 40, 40, 0.05)') && css.sdStyle.startsWith('none'),
     css.sdStyle);
