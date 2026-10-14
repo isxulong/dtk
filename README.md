@@ -22,7 +22,7 @@
 - **导入文本**：从TXT文件导入（上限100000字符，超限自动截断并提示）
 - **双击定位**：双击格子自动定位到对应输入位置
 - **打印功能**：打印格子纸内容（自动隐藏无关元素），A4 适配、25列完整显示、多页内容自动分页，无横向/纵向滚动条；打印态所有标记类背景（淡底/缩进阴影等）强制置空，保证卷面纯净
-- **长文本性能**：采用增量渲染与分帧渲染，实测2000字全量渲染约80ms（本地 Chromium 实测），引擎纯计算部分约2ms
+- **长文本性能**：采用增量渲染与分帧渲染，实测（1 核沙箱，20261014e）：2000 字完成口径约 60ms、5000 字约 125ms，T(5000)/T(2000)≈2（线性）
 - **安全加固**：XSS 防注入（纯文本写入，innerHTML 不接触用户内容）、导入长度限制、中文输入法兼容、本地存储异常降级
 - **自适应布局**：支持在移动设备上使用（窄屏下提供横向滚动与提示）
 
@@ -86,3 +86,16 @@ node test/browser.test.mjs
 ## 在线体验
 
 [点击这里体验在线答题卡](https://dtk.isxl.cn)
+
+
+## 20261014 修复登记（20 条缺陷修复 · 修订后终版范围）
+
+- 版本推进：20261013a → 20261014a/b/c/d/e（五批落地，每批全量测试后递进）
+- **批1（a）**：#1 viewport meta；#2 全角括号禁则（U+FF08/09、FF5B/5D、FF5F/60 补入避头/避尾集）；#6 Ctrl+Z 接管（IME 组字期放行、栈底静默+首次提示）；#9 撤销落盘；#20(5) 英文撇号降噪
+- **批2（b）**：#13+#14 `_headers` 响应头与 meta CSP（beacon 双域白名单：script-src static.cloudflareinsights.com、connect-src cloudflareinsights.com，实测所得）；#17b 空内容打印 confirm 拦截；#17c 双击定位静态说明文案（桌面 .guide / 移动端 .mobile-hint）；#17d favicon.svg + description meta；#18 复原同时复位字号
+- **批3（c）**：#16 性能断言口径（t0=distributeText 入口，完成时刻=内容写入后连续两次 rAF）；#4 大文本渲染 O(N)（≤8000 格 DocumentFragment 一次性挂载；>8000 分帧兜底每帧 2000 格）。实测定位到真瓶颈为 syncUpdateGridRange 逐格 innerText 读写强制 layout 回流（O(N²)，修复前 2000 字 ~5s、5000 字 ~34s），改 textContent 后 2000 字 ~60ms、5000 字 ~125ms、比值 ≈2
+- **批4（d）**：#8 findPrevContentCell 跳过指令空格（点号并入真实内容字格）；#10 合并链挤格：字号按每字符 1.1/len em 等比缩小并钉住普通格宽高（1.1em 会随字号联动缩小导致缩字追不上溢出），保证 4+ 字符合并格 scrollWidth 不溢出；新增 js/text-normalize.js：#11 BOM/零宽/CR/Tab→+2+/控制符、#12 富文本粘贴拦截、#15 导入 400KB 字节预检 + `+N+` 超限 warning + 截断不再被成功提示顶掉；#20(2) 清理块收敛为 transformInputText；#20(6) 存储不可用一次性可见提示
+  - **emoji 条目按终版改口径**：不做码点化重构，统一输入边界过滤（normalizeInputText 同链剥离 U+1F000+ 表情区、ZWJ 序列、变体选择符、键帽封闭符与 BMP emoji 呈现区；保留全部 CJK、标点、数字字母与 `+N+` 指令语法；过滤后静默处理）。坐标系与引擎主循环零改动，含 emoji 输入剥离后格位/计数/双击定位与纯文本完全一致（有断言锁定）
+- **批5（e）**：#7 触屏（grid-item `touch-action: manipulation` + `user-select:none`；touch/pen 长按 550ms 兜底定位、10px 移动容差、vibrate 10ms）；#19 无障碍（grid-container aria-label 改述、有内容格 `role=gridcell`、撤销按钮 `aria-keyshortcuts="Control+Z"`）；#19b 导出首次 info 提示（hint:export 单次永久静默、打印态隐藏）；#5 E2E 可移植（裸包名 import 回退链 + PUPPETEER_EXECUTABLE_PATH + which 探测链 + package.json + GitHub Actions CI）
+- **撤销项（#17a 打印行间隙）：不修。** 用户实机打印件已验证完美，`@media print` 的 grid 样式保持原样、一律不碰。
+- 测试基线：批5 后 52 引擎单测 + 84 E2E 断言全绿（每批全量回归零红）。

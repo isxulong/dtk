@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">
+  <!-- dtk 申论格子纸 favicon：红框格子意象，主色 #c62828，16×16 画 2×2 格线 -->
+  <rect x="0.75" y="0.75" width="14.5" height="14.5" fill="#ffffff" stroke="#c62828" stroke-width="1.5"/>
+  <line x1="8" y1="1.5" x2="8" y2="14.5" stroke="#c62828" stroke-width="1.5"/>
+  <line x1="1.5" y1="8" x2="14.5" y2="8" stroke="#c62828" stroke-width="1.5"/>
+</svg>

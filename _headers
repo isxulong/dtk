@@ -1,0 +1,13 @@
+# dtk 申论格子纸 · 安全响应头（#13）
+# 托管于 Cloudflare Pages：本文件随仓库版本化，部署后自动生效。
+# CSP 与 index.html 内 <meta http-equiv="Content-Security-Policy"> 为同一份字符串——
+# 双层 CSP 同时存在时浏览器取交集，两处必须同批更新，否则最严格交集会意外拦截资源。
+# beacon 域名（script-src / connect-src）为线上无头实测结果：Cloudflare Web Analytics 自动注入。
+# 注：HSTS 首期不提交 preload 列表（不可逆），max-age 一年 + includeSubDomains 观察一个周期。
+# 待核实项：线上 ACAO: * 若来自 Cloudflare 面板规则，需在面板中核实删除（Pages 默认配置则无需处理）。
+
+/*
+  Strict-Transport-Security: max-age=31536000; includeSubDomains
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline' https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline'; connect-src 'self' https://cloudflareinsights.com; img-src 'self' data:; base-uri 'self'; frame-ancestors 'self'
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin

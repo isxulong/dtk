@@ -1,0 +1,22 @@
+name: test
+on: [push, pull_request]
+jobs:
+  engine:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - run: npm i
+      - run: node --test test/engine.test.mjs
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - run: sudo apt-get update && sudo apt-get install -y chromium-browser
+      - run: npm i
+      - run: node test/browser.test.mjs
+        env:
+          PUPPETEER_EXECUTABLE_PATH: /usr/bin/chromium-browser

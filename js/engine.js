@@ -1,6 +1,6 @@
 /**
  * engine.js —— 申论格子纸排版引擎（纯逻辑，无 DOM 依赖，可被 Node 直接 import 测试）
- * 版本：20261013a（与 index.html 的引用 query 同步，防缓存错位）
+ * 版本：20261014e（与 index.html 的引用 query 同步，防缓存错位）
  *
  * 终局裁决（E）落地口径：
  * - D1 点号默认独占一格，仅落点恰为行首（上一行 25 格已满）时并入末字格（考试允许；
@@ -19,7 +19,7 @@ import {
   STRAIGHT_QUOTES,
   classifyQuotes,
   forbiddenRole
-} from './punctuation-rules.js?v=20261013a';
+} from './punctuation-rules.js?v=20261014e';
 
 export { GRID_COLUMNS_PER_ROW, MAX_DIRECTIVE_SPACES };
 
@@ -37,11 +37,13 @@ function isComboTriple(a, b, c) {
   return a === b && b === c && (a === '?' || a === '!' || a === '？' || a === '！');
 }
 
-/** 找到前一个有效内容格 */
+/** 找到前一个有效内容格（#8：指令空格不是字——回溯须跳过 isSpaceDirective，
+ *  使点号并格目标回到真实内容字格；否则「你好+23+。」的点号会并进空格指令格） */
 export function findPrevContentCell(result, startIndex) {
   for (let idx = startIndex; idx >= 0; idx--) {
     const cell = result[idx];
-    if (cell && !cell.isLayoutSpace && !cell.isWideSecond && cell.text !== '') {
+    if (cell && !cell.isLayoutSpace && !cell.isWideSecond
+        && !cell.isSpaceDirective && cell.text !== '') {
       return idx;
     }
   }
@@ -122,7 +124,12 @@ export function computeGridContent(text, maxItems) {
           j++;
         }
         if (validDirective && j < text.length && text[j] === '+') {
-          const numSpaces = Math.min(parseInt(text.substring(i + 1, j), 10), MAX_DIRECTIVE_SPACES);
+          // #15(2)：+N+ 超限不再静默按上限处理——经 warnings 通道可见提示（与 D5 同哲学）
+          const want = parseInt(text.substring(i + 1, j), 10);
+          const numSpaces = Math.min(want, MAX_DIRECTIVE_SPACES);
+          if (want > MAX_DIRECTIVE_SPACES) {
+            warnings.push(`+${want}+ 超过上限 ${MAX_DIRECTIVE_SPACES}，已按 ${MAX_DIRECTIVE_SPACES} 格处理`);
+          }
           for (let k = 0; k < numSpaces && gridIndex < maxItems; k++) {
             result[gridIndex] = { text: ' ', sourceIndex: i, isSpaceDirective: true };
             gridIndex++;

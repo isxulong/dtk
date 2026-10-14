@@ -1,7 +1,7 @@
 /**
  * punctuation-rules.js —— 标点占格规则表（纯数据 + 纯函数，无 DOM 依赖）
  * 依据：GB/T 15834—2011《标点符号用法》§5.1 + 申论格子纸通行实践
- * 版本：20261013a（与 index.html / engine.js 的引用 query 同步，防缓存错位）
+ * 版本：20261014e（与 index.html / engine.js 的引用 query 同步，防缓存错位）
  */
 
 export const GRID_COLUMNS_PER_ROW = 25;
@@ -25,14 +25,16 @@ export const STRAIGHT_QUOTES = /["']/;
 /**
  * 行首禁则（避头）静态集：后引号、后括号、后书名号、间隔号、分隔号、连接号
  * D4+D8 修复：补 》 U+300B、〉 U+3009、” U+201D、’ U+2019
+ * 缺陷#2 修复（全量成对符号自查）：补 ） U+FF09、｝ U+FF5D、｠ U+FF60（半角 ) 原本即在，保留）
  */
-export const HEAD_FORBIDDEN_STATIC = /[』」”’》〉)〕］\]}】·\/\-―～]/;
+export const HEAD_FORBIDDEN_STATIC = /[』」”’》〉)）｝｠〕］\]}】·\/\-―～]/;
 
 /**
  * 行末禁则（避尾）静态集：前引号、前括号、前书名号
  * D4+D8 修复：补 “ U+201C、‘ U+2018
+ * 缺陷#2 修复（全量成对符号自查）：补 （ U+FF08、｛ U+FF5B、｟ U+FF5F（半角 ( 原本即在，保留）
  */
-export const TAIL_FORBIDDEN_STATIC = /[『「“‘(〔［\[{【《〈]/;
+export const TAIL_FORBIDDEN_STATIC = /[『「“‘(（｛｟〔［\[{【《〈]/;
 
 /**
  * D5：预扫描全文直引号，按出现奇偶做开/闭方向推断。
@@ -46,10 +48,17 @@ export function classifyQuotes(text) {
   const role = new Map();
   const unmatched = new Set();
   const warnings = [];
+  // 缺陷#20(5) 降噪：英文撇号（' 前后均为字母数字，如 don't）不进入配对扫描序列，
+  // 消除英文文本下的直引号警告噪音；" 保持全量扫描（无撇号用法）。
+  const isApostrophe = (i) => i > 0 && i + 1 < text.length
+    && ALNUM.test(text[i - 1]) && ALNUM.test(text[i + 1]);
   for (const q of ['"', "'"]) {
     const idxs = [];
     for (let i = 0; i < text.length; i++) {
-      if (text[i] === q) idxs.push(i);
+      if (text[i] === q) {
+        if (q === "'" && isApostrophe(i)) { continue; }
+        idxs.push(i);
+      }
     }
     idxs.forEach((idx, k) => role.set(idx, k % 2 === 0 ? 'open' : 'close'));
     if (idxs.length % 2 === 1) {

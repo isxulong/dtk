@@ -1,0 +1,14 @@
+{
+  "name": "dtk",
+  "version": "20261014e",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "test:engine": "node --test test/engine.test.mjs",
+    "test:e2e": "node test/browser.test.mjs",
+    "test": "npm run test:engine && npm run test:e2e"
+  },
+  "devDependencies": {
+    "puppeteer-core": "^24"
+  }
+}
