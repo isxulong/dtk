@@ -323,6 +323,15 @@
       flex-wrap: wrap;
       gap: 8px;
     }
+    /* 一键排版：空输入（含纯空白）置灰禁用；处理中 busy 态同样式 */
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    button:disabled:hover {
+      background-color: #fff;
+      border-color: #b0bec5;
+    }
 
     .count-display {
       margin-left: 10px;
@@ -469,6 +478,7 @@
            aria-label="文本输入区" aria-describedby="guide-desc" role="textbox"></div>
     </div>
     <div class="buttons">
+      <button class="btn-secondary" id="btn-auto-format" onclick="autoFormat()">一键排版</button>
       <button class="btn-secondary" onclick="clearPlusN()">清除+N+</button>
       <button class="btn-secondary" onclick="clearNewLines()">清除换行</button>
       <button class="btn-secondary" onclick="clearSpaces()">清除空格</button>
@@ -491,10 +501,11 @@
   </div>
   <script type="module">
     // ESM 收窄拆分（终局裁决 E）：排版引擎与规则表移入 js/，纯逻辑可被 Node import 测试。
-    // 引用带版本 query（?v=20261014e）防缓存错位；版本号须与 js/ 内文件同批更新。
-    import { GRID_COLUMNS_PER_ROW, computeGridContent, calculateEffectiveLength } from './js/engine.js?v=20261014e';
-    import { DEFAULT_TEXT } from './js/default-text.js?v=20261014e';
-    import { normalizeInputText } from './js/text-normalize.js?v=20261014e';
+    // 引用带版本 query（?v=20261014f）防缓存错位；版本号须与 js/ 内文件同批更新。
+    import { GRID_COLUMNS_PER_ROW, computeGridContent, calculateEffectiveLength } from './js/engine.js?v=20261014f';
+    import { DEFAULT_TEXT } from './js/default-text.js?v=20261014f';
+    import { normalizeInputText } from './js/text-normalize.js?v=20261014f';
+    import { autoFormatText } from './js/auto-format.js?v=20261014f';
 
     const MAX_IMPORT_TEXT_LENGTH = 100000;
     let updateTimeout;
@@ -695,9 +706,77 @@
     function clearInput() { transformInputText(() => '', '清空输入'); }
     function clearPlusN() { transformInputText((t) => t.replace(/\+\d+\+/g, ''), '清除+N+指令'); }
 
+    // 一键排版：清除系同族的建设性操作（整理而非清除）。
+    // 反馈走既有 showInfo 通道（5s 自消失、打印态隐藏），无弹窗、无人为延时。
+    function buildAutoFormatMessage(stats) {
+      const parts = [];
+      if (stats.indent > 0) { parts.push(`段首缩进 ${stats.indent} 处`); }
+      if (stats.spaces > 0) { parts.push(`清理多余空格 ${stats.spaces} 处`); }
+      if (stats.blankLines > 0) { parts.push(`合并空行 ${stats.blankLines} 处`); }
+      let msg = parts.length > 0 ? `已优化排版：${parts.join('、')}（Ctrl+Z 可撤销）`
+                                 : '已优化排版（Ctrl+Z 可撤销）';
+      if (stats.title === 'detected') {
+        msg += '；首行已按标题居中留空，如判断有误，双击首行格子可跳转修改';
+      } else if (stats.title === 'uncertain') {
+        msg += '；首行已按普通段落处理，若为标题可双击首行格子修改';
+      }
+      if (stats.hardBreaks > 0) {
+        msg += `；检测到 ${stats.hardBreaks} 处疑似句中换行，本版未自动合并`;
+      }
+      return msg;
+    }
+
+    // 空输入（含纯空白）置灰禁用 + 悬停提示；挂在输入监听链路上同步
+    function updateAutoFormatButton() {
+      const btn = document.getElementById('btn-auto-format');
+      if (!btn || btn.getAttribute('aria-busy') === 'true') { return; }
+      const empty = !document.getElementById('input-text').innerText.trim();
+      btn.disabled = empty;
+      if (empty) { btn.setAttribute('title', '没有可排版的文本'); }
+      else { btn.removeAttribute('title'); }
+    }
+
+    function autoFormat() {
+      const btn = document.getElementById('btn-auto-format');
+      try {
+        const inputTextDiv = document.getElementById('input-text');
+        const current = inputTextDiv.innerText;
+        if (!current.trim()) { return; } // 按钮已禁用，此处为双保险
+        btn.disabled = true;
+        btn.innerText = '排版中…';
+        btn.setAttribute('aria-busy', 'true');
+        try {
+          const { text, stats } = autoFormatText(current);
+          if (text === current) {
+            // 幂等：零改动不碰撤销栈（addToUndoHistory 自身也有去重兜底）
+            showInfo('排版已规范，本次无需调整');
+            return;
+          }
+          // 撤销坑：撤销栈是 400ms 节流写入，排版前状态可能尚未入栈——
+          // 先同步冲刷，保证一次 Ctrl+Z 精确回到排版前一刻
+          clearTimeout(undoThrottleTimer);
+          addToUndoHistory(current);
+          const caretPos = saveCaretPosition(inputTextDiv);
+          inputTextDiv.innerText = text;
+          highlightDirectives();
+          // 直调 distributeText 而非延迟版：排版是显式命令不是击键，
+          // 点完必须立刻看到格子变化（importText 同先例）；排版结果经其正常入栈
+          distributeText();
+          saveToLocalStorage();
+          restoreCaretPosition(inputTextDiv, caretPos);
+          showInfo(buildAutoFormatMessage(stats));
+        } finally {
+          btn.removeAttribute('aria-busy');
+          btn.disabled = false;
+          btn.innerText = '一键排版';
+        }
+      } catch (error) { showError(`一键排版失败: ${error.message}`); }
+    }
+
     // v9: 分帧渲染的 distributeTextWithDelay
     function distributeTextWithDelay() {
       clearTimeout(updateTimeout);
+      updateAutoFormatButton(); // 一键排版禁用态随输入同步（须在自动输入开关判断之前）
       if (!autoInputEnabled) return;
       if (isResizing) return;
       const inputTextDiv = document.getElementById('input-text');
@@ -814,6 +893,7 @@
         clearTimeout(undoThrottleTimer);
         const inputTextDiv = document.getElementById('input-text');
         const text = inputTextDiv.innerText;
+        updateAutoFormatButton(); // 一键排版禁用态同步（覆盖撤销/导入/初始渲染等直调路径）
         const gridContainer = document.getElementById('grid-container');
         // 渲染竞态加固：任何一次 distribute 都取新一代号，使所有旧的分帧渲染循环立即失效
         // （否则负增长/同步快速路径不换代号，旧循环会在格子被删减后继续写格子并抛错）
@@ -1279,6 +1359,7 @@
       resetTextarea, adjustTextarea, adjustFontSize,
       distributeTextWithDelay, handleKeyDown, distributeText, highlightDirectives,
       clearPlusN, clearNewLines, clearSpaces, clearInput,
+      autoFormat, updateAutoFormatButton,
       undo, toggleAutoInput, downloadText, importText, updateCountTarget,
       printGrid
     });

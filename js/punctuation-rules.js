@@ -1,7 +1,7 @@
 /**
  * punctuation-rules.js —— 标点占格规则表（纯数据 + 纯函数，无 DOM 依赖）
  * 依据：GB/T 15834—2011《标点符号用法》§5.1 + 申论格子纸通行实践
- * 版本：20261014e（与 index.html / engine.js 的引用 query 同步，防缓存错位）
+ * 版本：20261014f（与 index.html / engine.js 的引用 query 同步，防缓存错位）
  */
 
 export const GRID_COLUMNS_PER_ROW = 25;

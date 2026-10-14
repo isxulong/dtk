@@ -849,6 +849,107 @@ try {
     b5export.shown1 && b5export.hintSet && b5export.hidden && !b5export.shown2,
     JSON.stringify(b5export));
 
+  // ---------- 批6（20261014f）：一键排版 ----------
+  // b6-1 空输入（含纯空白）→ 按钮禁用 + 悬停提示
+  const b6empty = await page.evaluate(() => {
+    const el = document.getElementById('input-text');
+    el.innerText = '  \n\u3000\u3000  ';
+    window.updateAutoFormatButton();
+    const btn = document.getElementById('btn-auto-format');
+    return { disabled: btn.disabled, title: btn.getAttribute('title') };
+  });
+  record('一键排版：纯空白输入按钮禁用并带悬停提示',
+    b6empty.disabled === true && b6empty.title === '没有可排版的文本',
+    JSON.stringify(b6empty));
+
+  // b6-2 有输入 → 按钮启用、无悬停提示
+  const b6ready = await page.evaluate(() => {
+    document.getElementById('input-text').innerText = '正文';
+    window.updateAutoFormatButton();
+    const btn = document.getElementById('btn-auto-format');
+    return { disabled: btn.disabled, title: btn.getAttribute('title'), cls: btn.className };
+  });
+  record('一键排版：有输入按钮启用（btn-secondary、清除族首位）',
+    b6ready.disabled === false && b6ready.title === null && b6ready.cls === 'btn-secondary',
+    JSON.stringify(b6ready));
+
+  // b6-3 busy 契约静态检查：处理中禁用 + 文案「排版中…」+ aria-busy（busy 持续 <1 帧，
+  // 外部不可观测中间态，改为校验实现存在与完成后复位，见 b6-4）
+  const b6busyImpl = await page.evaluate(async () => {
+    const src = await (await fetch('/index.html')).text();
+    return {
+      busyText: src.includes("btn.innerText = '排版中…'"),
+      ariaBusy: src.includes("btn.setAttribute('aria-busy', 'true')"),
+      restore: src.includes("btn.removeAttribute('aria-busy')")
+    };
+  });
+  record('一键排版：busy 态实现（排版中… + aria-busy + 完成复位）',
+    b6busyImpl.busyText && b6busyImpl.ariaBusy && b6busyImpl.restore,
+    JSON.stringify(b6busyImpl));
+
+  // b6-4 端到端：脏文本 → 点击 → 文本重排 + 格子刷新 + info 分类计数 + 按钮复位
+  const dirtyText = '以奋斗之姿 赴时代之约  \n\n\u3000\u3000时代的 浪潮奔涌向前，每一朵浪花都承载着无数奋斗者的梦想与汗水。站在新的历史节点上，我们既是见证者，更是参与者。\n\n\n按照 GB/T 15834 标准和 iOS 16 规范执行，到 2026 年实现目标，这是一项长期而艰巨的系统工程任务。';
+  const b6e2e = await page.evaluate(async (dirty) => {
+    const el = document.getElementById('input-text');
+    el.innerText = dirty;
+    window.distributeText(); // 模拟排版前状态（触发 400ms 节流撤销写入）
+    window.autoFormat();     // 立即点击（<400ms，覆盖撤销栈冲刷坑）
+    const btn = document.getElementById('btn-auto-format');
+    const info = document.getElementById('info-message');
+    const count = parseInt((document.getElementById('count-display').textContent.match(/(\d+)/) || [0, 0])[1], 10);
+    const gridItems = document.querySelectorAll('#grid-container .grid-item').length;
+    return {
+      text: el.innerText,
+      infoShown: info.classList.contains('show'),
+      infoText: info.innerText,
+      btnRestored: !btn.disabled && btn.innerText === '一键排版' && btn.getAttribute('aria-busy') === null,
+      count, gridItems,
+      saved: localStorage.getItem('savedText')
+    };
+  }, dirtyText);
+  const b6expect = '+7+以奋斗之姿 赴时代之约\n+2+时代的浪潮奔涌向前，每一朵浪花都承载着无数奋斗者的梦想与汗水。站在新的历史节点上，我们既是见证者，更是参与者。\n+2+按照GB/T 15834标准和iOS 16规范执行，到2026年实现目标，这是一项长期而艰巨的系统工程任务。';
+  record('一键排版端到端：标题居中+缩进注入+空格清理+空行合并',
+    b6e2e.text === b6expect, 'got=' + JSON.stringify(b6e2e.text.slice(0, 60)));
+  record('一键排版端到端：格子已刷新且计数与格子数一致',
+    b6e2e.count > 0 && b6e2e.gridItems >= b6e2e.count && b6e2e.gridItems % 25 === 0,
+    'count=' + b6e2e.count + ' gridItems=' + b6e2e.gridItems);
+  record('一键排版反馈：info 条分类计数 + 标题结论 + Ctrl+Z 提示',
+    b6e2e.infoShown && b6e2e.infoText.includes('段首缩进 2 处')
+      && b6e2e.infoText.includes('清理多余空格 7 处')
+      && b6e2e.infoText.includes('合并空行 3 处')
+      && b6e2e.infoText.includes('标题居中') && b6e2e.infoText.includes('Ctrl+Z'),
+    b6e2e.infoText);
+  record('一键排版：完成后按钮复位（启用/文案恢复/aria-busy 移除）并存档',
+    b6e2e.btnRestored && b6e2e.saved === b6expect, JSON.stringify({ restored: b6e2e.btnRestored }));
+
+  // b6-5 一次 Ctrl+Z 精确回到排版前（撤销栈 400ms 节流冲刷验证）
+  await new Promise((r) => setTimeout(r, 500)); // 等排版结果节流入栈
+  const b6undo = await page.evaluate(() => {
+    const el = document.getElementById('input-text');
+    el.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true, cancelable: true }));
+    return el.innerText;
+  });
+  record('一键排版撤销：一次 Ctrl+Z 精确回到排版前文本',
+    b6undo === dirtyText, 'got=' + JSON.stringify(b6undo.slice(0, 40)));
+
+  // b6-6 幂等：已规范文本再点 →「无需调整」+ 不产生撤销栈垃圾
+  const b6idem = await page.evaluate(async () => {
+    window.autoFormat(); // 先排回规范态（当前是排版前的脏文本）
+    await new Promise((r) => setTimeout(r, 500));
+    const before = document.getElementById('input-text').innerText;
+    window.autoFormat(); // 第二次：零改动
+    const info = document.getElementById('info-message');
+    const msg = info.innerText;
+    await new Promise((r) => setTimeout(r, 500));
+    const el = document.getElementById('input-text');
+    el.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true, cancelable: true }));
+    return { msg, afterUndo: el.innerText, before };
+  });
+  record('一键排版幂等：零改动提示「无需调整」',
+    b6idem.msg.includes('排版已规范，本次无需调整'), b6idem.msg);
+  record('一键排版幂等：不产生撤销栈垃圾（Ctrl+Z 仍一步回到排版前）',
+    b6idem.afterUndo === dirtyText, 'afterUndo=' + JSON.stringify(b6idem.afterUndo.slice(0, 40)));
+
   // ---------- 页面无 JS 报错 ----------
   record('无页面 JS 运行错误', consoleErrors.length === 0, consoleErrors.slice(0, 3).join(' ; '));
 

@@ -17,6 +17,7 @@
   - 清除所有`+N+`指令
   - 清空文本框
   - 撤销操作（最多10步；快速连续输入时，400ms内的变化会合并为一个撤销点）
+- **一键排版**：一键规范文本格式——中英文/数字与中文的邻接空格按规则清理（`GB/T 15834`、`iOS 16` 等组合保留），首行自动识别为标题时居中留空（判不中时按普通段落处理并提示），疑似句中换行检测并提示（不自动合并）；全程同步无弹窗无延时，结果可一次 Ctrl+Z 精确撤销
 - **自动输入模式**：开启/关闭实时预览
 - **下载文本**：将当前文本框内容下载为TXT文件
 - **导入文本**：从TXT文件导入（上限100000字符，超限自动截断并提示）
@@ -44,8 +45,11 @@ index.html                 页面与交互逻辑（UI 层）
 js/engine.js               排版引擎：占格计算、宽符号、禁则、合并（纯逻辑，可被 Node import）
 js/punctuation-rules.js    规则表：字符集、直引号配对分类（纯逻辑，可被 Node import）
 js/default-text.js         预设范文文本（含「一、」「二、」「三、」新行+2格缩进）
-test/engine.test.mjs       node:test 引擎测试套件（26 项，覆盖 J01-J13 验收用例）
-test/browser.test.mjs      浏览器端 E2E 测试（Puppeteer，内置静态服务，37 项检查，含双击定位多位置回归与 F1 无视觉差异断言）
+js/text-normalize.js       输入边界清洗：BOM/零宽/控制符/emoji 剥离（纯逻辑，可被 Node import）
+js/auto-format.js          一键排版：五阶段清理流水线、标题评分与居中留空、句中换行检测（纯逻辑，可被 Node import）
+test/engine.test.mjs       node:test 引擎测试套件（52 项，覆盖 J01-J13 验收用例）
+test/auto-format.test.mjs  node:test 一键排版测试套件（32 项，含零丢失/幂等不变量）
+test/browser.test.mjs      浏览器端 E2E 测试（Puppeteer，内置静态服务，88 项检查，含双击定位多位置回归与 F1 无视觉差异断言）
 ```
 
 - `index.html` 通过 `<script type="module">` 原生加载，仍是零构建静态托管。
@@ -57,6 +61,9 @@ test/browser.test.mjs      浏览器端 E2E 测试（Puppeteer，内置静态服
 ```bash
 # 引擎单测（Node 18+）
 node --test test/engine.test.mjs
+
+# 一键排版单测（Node 18+）
+node --test test/auto-format.test.mjs
 
 # 浏览器 E2E（需系统安装 Chromium；脚本自带静态服务，无需额外依赖）
 node test/browser.test.mjs
@@ -99,3 +106,12 @@ node test/browser.test.mjs
 - **批5（e）**：#7 触屏（grid-item `touch-action: manipulation` + `user-select:none`；touch/pen 长按 550ms 兜底定位、10px 移动容差、vibrate 10ms）；#19 无障碍（grid-container aria-label 改述、有内容格 `role=gridcell`、撤销按钮 `aria-keyshortcuts="Control+Z"`）；#19b 导出首次 info 提示（hint:export 单次永久静默、打印态隐藏）；#5 E2E 可移植（裸包名 import 回退链 + PUPPETEER_EXECUTABLE_PATH + which 探测链 + package.json + GitHub Actions CI）
 - **撤销项（#17a 打印行间隙）：不修。** 用户实机打印件已验证完美，`@media print` 的 grid 样式保持原样、一律不碰。
 - 测试基线：批5 后 52 引擎单测 + 84 E2E 断言全绿（每批全量回归零红）。
+
+## 20261014f 新增：一键排版
+
+- 新增 `js/auto-format.js`（纯逻辑模块）：五阶段清理流水线（ASCII 邻接空格规则，纯中文/中英混排/数字分场景，`GB/T 15834`、`iOS 16` 等组合原样保留；标题行豁免词间空格）+ 9 特征标题评分判定（宁漏判不误判，判不中回落 +2+ 并提示可双击首行格子修改）+ 疑似句中换行检测（只提示不自动合并、内容零丢失）
+- 标题判定命中时按 ⌊(25−字数)/2⌋ 居中留空（clamp[2,10]），与范文标题口径一致
+- UI：「一键排版」按钮置于清除族首位，空/纯空白输入禁用，busy 态 try/finally 复位；全程同步执行，无预览、无等待弹窗、无人造延时
+- 撤销：一次 Ctrl+Z 精确回到排版前；零改动时提示「排版已规范，本次无需调整」且不产生撤销栈垃圾
+- 不变量有单测锁定：剥离空白与 `+N+` 指令后可见字符序列逐字节一致（零丢失）；`autoFormatText` 幂等且以预设范文为不动点
+- 版本推进：20261014e → 20261014f；测试基线：52 引擎单测 + 32 排版单测 + 88 E2E 断言，合计 172 条全绿（独立质检重跑一致）
