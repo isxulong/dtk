@@ -1,6 +1,6 @@
 /**
  * engine.js —— 申论格子纸排版引擎（纯逻辑，无 DOM 依赖，可被 Node 直接 import 测试）
- * 版本：20261014f（与 index.html 的引用 query 同步，防缓存错位）
+ * 版本：20261015a（与 index.html 的引用 query 同步，防缓存错位）
  *
  * 终局裁决（E）落地口径：
  * - D1 点号默认独占一格，仅落点恰为行首（上一行 25 格已满）时并入末字格（考试允许；
@@ -19,7 +19,7 @@ import {
   STRAIGHT_QUOTES,
   classifyQuotes,
   forbiddenRole
-} from './punctuation-rules.js?v=20261014f';
+} from './punctuation-rules.js?v=20261015a';
 
 export { GRID_COLUMNS_PER_ROW, MAX_DIRECTIVE_SPACES };
 

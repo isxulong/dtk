@@ -1,6 +1,6 @@
 /**
  * auto-format.js —— 一键排版（纯逻辑，无 DOM 依赖，可被 Node 直接 import 测试）
- * 版本：20261014f
+ * 版本：20261015a
  *
  * 定位：text-normalize.js（字符级卫生，输入边界静默执行）之上的「结构级改写」层，
  * 由用户显式点击「一键排版」触发，改动经 stats 反馈给用户。两层的关注点与触发
@@ -24,8 +24,8 @@
  *   ② 幂等——autoFormatText(autoFormatText(x)).text === autoFormatText(x).text。
  */
 
-import { normalizeInputText } from './text-normalize.js?v=20261014f';
-import { GRID_COLUMNS_PER_ROW, calculateEffectiveLength } from './engine.js?v=20261014f';
+import { normalizeInputText } from './text-normalize.js?v=20261015a';
+import { GRID_COLUMNS_PER_ROW, calculateEffectiveLength } from './engine.js?v=20261015a';
 
 /** 行内空白字符类：半角空格 / 全角空格 / 不间断空格 */
 const INLINE_WS = '[ \\u3000\\u00A0]';

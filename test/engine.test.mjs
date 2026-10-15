@@ -292,24 +292,31 @@ test('#13 _headers 含 HSTS / nosniff / Referrer-Policy 三项基础响应头', 
   assert.ok(/Referrer-Policy: strict-origin-when-cross-origin/.test(headers));
 });
 
-test('#20(3) 版本号三处同步：index.html ?v= 与 engine.js 内部引用、各 js 版本注释一致', () => {
+test('#20(3) 版本号全仓同步：index.html ?v=（9 处）与 js/ 内引用（3 处）、package.json、各 js 版本注释一致', () => {
+  // 白屏优化⑧（20261015a）：与 test/version-sync.test.mjs ①② 同口径——index.html
+  // 因 modulepreload×5 从 4 处升为 9 处（5 preload + 4 import），全仓 12 处。
   const html = readFileSync(join(REPO, 'index.html'), 'utf8');
   const engine = readFileSync(join(REPO, 'js/engine.js'), 'utf8');
   const punct = readFileSync(join(REPO, 'js/punctuation-rules.js'), 'utf8');
   const def = readFileSync(join(REPO, 'js/default-text.js'), 'utf8');
   const htmlVs = [...html.matchAll(/\.js\?v=([0-9a-z]+)/g)].map(m => m[1]);
-  assert.ok(htmlVs.length === 4, `index.html 应有 4 处 .js?v= 引用（engine/default-text/text-normalize/auto-format），实得 ${htmlVs.length}`);
-  assert.equal(new Set(htmlVs).size, 1, 'index.html 四处 ?v= 版本不一致');
+  assert.ok(htmlVs.length === 9, `index.html 应有 9 处 .js?v= 引用（5 modulepreload + 4 import），实得 ${htmlVs.length}`);
+  assert.equal(new Set(htmlVs).size, 1, 'index.html 九处 ?v= 版本不一致');
   const v = htmlVs[0];
+  const pkg = JSON.parse(readFileSync(join(REPO, 'package.json'), 'utf8'));
+  assert.equal(pkg.version, v, `package.json version（${pkg.version}）应与 ?v=（${v}）一致`);
   const engineQ = [...engine.matchAll(/\?v=([0-9a-z]+)/g)].map(m => m[1]);
   assert.ok(engineQ.length === 1, 'engine.js 应有 1 处内部 ?v=');
   assert.equal(engineQ[0], v, 'engine.js 内部引用版本与 index.html 不一致');
+  const autoFmt = readFileSync(join(REPO, 'js/auto-format.js'), 'utf8');
+  const autoFmtQ = [...autoFmt.matchAll(/\?v=([0-9a-z]+)/g)].map(m => m[1]);
+  assert.ok(autoFmtQ.length === 2, 'auto-format.js 应有 2 处内部 ?v=');
+  assert.deepEqual([...new Set(autoFmtQ)], [v], 'auto-format.js 内部引用版本与 index.html 不一致');
   assert.ok(punct.includes(`版本：${v}`), 'punctuation-rules.js 版本注释不同步');
   assert.ok(def.includes(`版本：${v}`), 'default-text.js 版本注释不同步');
   assert.ok(engine.includes(`版本：${v}`), 'engine.js 版本注释不同步');
   const norm = readFileSync(join(REPO, 'js/text-normalize.js'), 'utf8');
   assert.ok(norm.includes(`版本：${v}`), 'text-normalize.js 版本注释不同步');
-  const autoFmt = readFileSync(join(REPO, 'js/auto-format.js'), 'utf8');
   assert.ok(autoFmt.includes(`版本：${v}`), 'auto-format.js 版本注释不同步');
 });
 

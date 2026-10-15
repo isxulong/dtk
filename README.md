@@ -49,12 +49,14 @@ js/text-normalize.js       输入边界清洗：BOM/零宽/控制符/emoji 剥�
 js/auto-format.js          一键排版：五阶段清理流水线、标题评分与居中留空、句中换行检测（纯逻辑，可被 Node import）
 test/engine.test.mjs       node:test 引擎测试套件（52 项，覆盖 J01-J13 验收用例）
 test/auto-format.test.mjs  node:test 一键排版测试套件（32 项，含零丢失/幂等不变量）
-test/browser.test.mjs      浏览器端 E2E 测试（Puppeteer，内置静态服务，88 项检查，含双击定位多位置回归与 F1 无视觉差异断言）
+test/version-sync.test.mjs node:test 版本同步与发版纪律门禁（4 项断言：全仓 ?v= 唯一且==version、modulepreload≡import 集合、HTML 范文副本===DEFAULT_TEXT、_headers 缓存纪律）
+test/browser.test.mjs      浏览器端 E2E 测试（Puppeteer，内置静态服务，99 项检查，含双击定位多位置回归、F1 无视觉差异断言与白屏优化四项行为锁）
+scripts/bump.mjs           版本号一键替换脚本（npm run bump -- <新版本号>，全仓 12 处 ?v= + js 头部版本注释 + package.json 一次替换）
 ```
 
 - `index.html` 通过 `<script type="module">` 原生加载，仍是零构建静态托管。
 - ⚠️ **不能直接双击 file:// 打开**：ES 模块受同源限制，file:// 下会静默失效；请通过 http/https 访问（如 `python3 -m http.server` 或任意静态托管）。
-- js 引用带版本 query（如 `./js/engine.js?v=20261013a`）防缓存错位：**改动 js/ 内文件时必须同批更新 index.html 引用中的版本号**。
+- js 引用带版本 query（如 `./js/engine.js?v=<版本号>`）防缓存错位：全仓**单一版本号**（12 处引用：index.html 9 处 + js/ 内 3 处），由 `npm run bump`（scripts/bump.mjs）一键批量替换，`npm run test:version-sync` 机器校验全仓 `?v=` 取值唯一且等于 package.json version。**禁止手工单改一处**。
 
 ## 测试
 
@@ -65,9 +67,23 @@ node --test test/engine.test.mjs
 # 一键排版单测（Node 18+）
 node --test test/auto-format.test.mjs
 
+# 版本同步与发版纪律门禁（Node 18+，零依赖）
+node --test test/version-sync.test.mjs
+
 # 浏览器 E2E（需系统安装 Chromium；脚本自带静态服务，无需额外依赖）
 node test/browser.test.mjs
+
+# 或一次跑全量（与 CI 同口径）
+npm test
 ```
+
+## 发版纪律（20261015a 起为硬性纪律，机器断言锁定）
+
+1. **全局单版本号**：全仓 `?v=` 共 12 处（index.html 9 + js/ 3），必须等于 package.json version；只能经 `npm run bump`（scripts/bump.mjs）批量替换，**禁止手工单改一处**。`test/version-sync.test.mjs` ①② 与 `test/engine.test.mjs` #20(3) 双重锁定。
+2. **js/ 历史文件永不删除、永不改名**：每个历史 `?v=` 的模块都可能被旧 HTML 引用（immutable 缓存最长一年），删除即对旧访客造成永久 404。
+3. **回滚 = 前滚**：immutable 缓存不可撤销，线上回滚必须发新版本号（把引用指回旧模块内容），不得试图"撤销缓存"。
+4. **HTML 永不加缓存**：`_headers` 的 `/*` 块永远不得出现 Cache-Control；immutable 只允许出现在 `/js/*` 块。HTML 一旦强缓存，用户拿到旧 HTML + 旧 js，新旧混血最长一年不可自愈。`test/version-sync.test.mjs` ④ 锁定。
+5. **范文双源编辑义务**：346 字范文有两份逐字一致的副本——`index.html` 内 #input-text 的字面静态文本（服务 JS 就绪前可见）与 `js/default-text.js` 的 DEFAULT_TEXT。**改一处必须同步另一处**；HTML 副本源码内各行禁止缩进空格、首行紧跟开标签、末行紧贴 `</div>`；文本含 `<` `>` `&` 时须做实体转义（测试按反转义归一后逐字比对）。`test/version-sync.test.mjs` ③ 锁定。
 
 ## 已登记待办（P2，后续批次）
 
@@ -115,3 +131,16 @@ node test/browser.test.mjs
 - 撤销：一次 Ctrl+Z 精确回到排版前；零改动时提示「排版已规范，本次无需调整」且不产生撤销栈垃圾
 - 不变量有单测锁定：剥离空白与 `+N+` 指令后可见字符序列逐字节一致（零丢失）；`autoFormatText` 幂等且以预设范文为不动点
 - 版本推进：20261014e → 20261014f；测试基线：52 引擎单测 + 32 排版单测 + 88 E2E 断言，合计 172 条全绿（独立质检重跑一致）
+
+
+## 20261015a 白屏优化（四项同批 + 缓存策略 + 发版纪律）
+
+背景：线上真网环境下页面偶发长时间白屏（蓝方实测取证），终裁定位三类根因——ESM 串行瀑布、window.onload 门控首屏渲染、模块静态加载失败无任何兜底。本批四项必须同批发布（两两硬耦合），不可拆单。
+
+- **①拆 onload 锁**：初始化从 `window.onload` 迁入内联 module script 求值路径（模块执行完即初始化，不等 favicon/beacon 等尾部资源）。P0 规避：保留 try/catch 包裹 init（失败必须 `showError` 可见，不静默白屏）；`Object.assign(window,…)` 前移到 init 调用之前（隐私模式 localStorage 被禁时按钮不得全死）；双 rAF 至少保留一层（无头/隐藏态 innerText 语义可能退化为 textContent，换行丢失）。
+- **②modulepreload×5**：head 内为 5 个模块加 `<link rel="modulepreload">`，href 与对应 import specifier（含 `?v=`）逐字符一致——module map 按 URL 含 query 寻址，差一个字符同一模块抓两遍、preload 白做；punctuation-rules.js 的 preload 复制 engine.js 内部那条 URL。老浏览器静默忽略，等价现状瀑布。
+- **③范文落 HTML + init 三态**：346 字范文以字面静态文本写入 #input-text（`white-space: pre-wrap` 原生渲染换行，不用 `<br>`），JS 就绪前用户即可见、可编辑。init 按三态裁决：**就绪前用户输入**（当前 innerText 与范文逐字不一致且非空）→ 保留、照常渲染、入撤销栈、触发保存链（防静默丢字底线，优先级最高，历史存档不覆盖本会话输入）；非空存档 → 恢复 + normalizeInputText 清洗；无存档或存档空串 → 范文。双源一致性由 test/version-sync.test.mjs ③ 机器断言。
+- **④模块挂起看门狗**：独立内联**经典脚本**（非 module）放 head——静态 import 失败时整个 module script 不求值，写在模块里的兜底根本不会执行。阈值 10 秒（慢而正常的加载可达 5s+，过短误报）；提示非阻断、可关闭；重试只允许 `location.reload()`（重新初始化会挂双份监听器，一次粘贴翻倍）；就绪标志 `window.__dtkReady` 设在模块体末尾（Object.assign 与 init 之后），一到即自愈移除横幅；横幅 class 已入打印隐藏清单，打印态零污染。
+- **⑤_headers 缓存策略**：新增 `/js/*` 规则 `Cache-Control: public, max-age=31536000, immutable`；`/*` 块永远不出现 Cache-Control（HTML 强缓存 = 发版后旧 HTML 配旧 js，一年不可自愈）。规则叠加以逗号拼接，`/js/*` 块只加 Cache-Control 不重复其他头。
+- **⑥测试门禁**：新增 `test/version-sync.test.mjs`（node:test 零依赖，进 npm test 与 CI 两个 job）四断言：全仓 `?v=` 唯一且 == version（12 处）；modulepreload href 集合 ≡ import URL 集合；HTML 范文副本 === DEFAULT_TEXT；_headers 缓存纪律。`test/engine.test.mjs` #20(3) 同步改造（4→9 处 + package.json 对齐）。E2E 补 11 项：存档三态（含清空→刷新→范文回归）、格子出现早于 load 事件（MutationObserver 计时 + 可控挂起资源，禁实现内部计时）、就绪前输入保留（扣住模块制造就绪前窗口）、看门狗横幅出现/reload/可关闭。
+- 版本推进：20261014f → 20261015a（12 处 `?v=` 机器同步）；打印相关 CSS 与 f5593f5 逐字节一致（唯一差异为隐藏清单按设计新增 `.module-timeout`）；测试基线：52 引擎单测 + 32 排版单测 + 4 version-sync 单测 + 99 E2E 断言，合计 187 条全绿。骨架屏本轮未做。

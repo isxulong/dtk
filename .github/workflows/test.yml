@@ -9,6 +9,8 @@ jobs:
         with: { node-version: 20 }
       - run: npm i
       - run: node --test test/engine.test.mjs
+      # 白屏优化⑥（20261015a）：version-sync 门禁进 CI（与 npm test 同一套断言）
+      - run: node --test test/version-sync.test.mjs
   e2e:
     runs-on: ubuntu-latest
     steps:
@@ -17,6 +19,8 @@ jobs:
         with: { node-version: 20 }
       - run: sudo apt-get update && sudo apt-get install -y chromium-browser
       - run: npm i
+      # 白屏优化⑥（20261015a）：version-sync 门禁进 CI（与 npm test 同一套断言）
+      - run: node --test test/version-sync.test.mjs
       - run: node test/browser.test.mjs
         env:
           PUPPETEER_EXECUTABLE_PATH: /usr/bin/chromium-browser

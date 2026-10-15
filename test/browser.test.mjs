@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { computeGridContent } from '../js/engine.js';
+import { DEFAULT_TEXT } from '../js/default-text.js';
 // #5 E2E 可移植：优先裸包名（npm i 后可用），回退沙箱绝对路径；可执行文件走探测链
 let puppeteer;
 try { puppeteer = (await import('puppeteer-core')).default; }
@@ -24,6 +25,13 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.mjs': 'text/javascript', '.css': 'text/css', '.json': 'application/json' };
 const server = http.createServer((req, res) => {
   let p = decodeURIComponent(req.url.split('?')[0]);
+  // 白屏优化 E2E 专用：可控延迟的挂起资源（模拟 favicon/beacon 等尾部资源挂起，
+  // 制造「load 事件被尾部资源拖住」的确定性场景；请求由测试页在 body 解析出时注入）
+  if (p === '/__hang.png') {
+    const ms = parseInt((req.url.match(/ms=(\d+)/) || [0, 2000])[1], 10);
+    setTimeout(() => { res.writeHead(204); res.end(); }, ms);
+    return;
+  }
   if (p === '/') p = '/index.html';
   const fp = path.join(ROOT, p);
   if (!fp.startsWith(ROOT)) { res.writeHead(403); res.end(); return; }
@@ -949,6 +957,186 @@ try {
     b6idem.msg.includes('排版已规范，本次无需调整'), b6idem.msg);
   record('一键排版幂等：不产生撤销栈垃圾（Ctrl+Z 仍一步回到排版前）',
     b6idem.afterUndo === dirtyText, 'afterUndo=' + JSON.stringify(b6idem.afterUndo.slice(0, 40)));
+
+  // ---------- 白屏优化 E2E（20261015a）：存档三态 / 格子早于 load / 就绪前输入保留 / 看门狗 ----------
+  const htmlSrc = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
+  record('白屏优化④ 看门狗静态契约（__dtkReady 标志/10s 阈值/reload 重试/就绪自愈/打印隐藏）',
+    htmlSrc.includes('window.__dtkReady = true')
+    && htmlSrc.includes('}, 10000);')
+    && htmlSrc.includes('location.reload()')
+    && htmlSrc.includes('__timeoutBanner.remove()')
+    && htmlSrc.includes('.error-message, .info-message, .module-timeout, .mobile-hint, .size-buttons,'),
+    '');
+
+  // 存档三态①：无存档 → 范文逐字回归（HTML 副本 + init 态③ 显式重写双保险）
+  await page.evaluate(() => localStorage.clear());
+  await page.goto(BASE, { waitUntil: 'networkidle0' });
+  await page.waitForFunction(() => window.__dtkReady === true, { timeout: 10000 });
+  const noArchive = await page.evaluate(() => document.getElementById('input-text').innerText);
+  record('白屏优化③ 存档态①：无存档 → 范文逐字回归（innerText === DEFAULT_TEXT）',
+    noArchive === DEFAULT_TEXT, 'len=' + noArchive.length + ' 期望 len=' + DEFAULT_TEXT.length);
+
+  // 存档三态②：非空存档 → 恢复 + normalizeInputText 清洗（\r → \n，#11(3) 原语义）
+  await page.evaluate(() => localStorage.setItem('savedText', '存档回归\r测试'));
+  await page.goto(BASE, { waitUntil: 'networkidle0' });
+  await page.waitForFunction(() => window.__dtkReady === true, { timeout: 10000 });
+  const withArchive = await page.evaluate(() => document.getElementById('input-text').innerText);
+  record('白屏优化③ 存档态②：非空存档恢复并 normalize（\\r→\\n）',
+    withArchive === '存档回归\n测试', 'got=' + JSON.stringify(withArchive));
+
+  // 存档三态③：清空（存档空串）→ 刷新 → 范文回归
+  await page.evaluate(() => localStorage.setItem('savedText', ''));
+  await page.goto(BASE, { waitUntil: 'networkidle0' });
+  await page.waitForFunction(() => window.__dtkReady === true, { timeout: 10000 });
+  const clearedArchive = await page.evaluate(() => document.getElementById('input-text').innerText);
+  record('白屏优化③ 存档态③：清空→刷新→范文回归',
+    clearedArchive === DEFAULT_TEXT, 'len=' + clearedArchive.length);
+
+  // 格子出现早于 load 事件（优化①行为锁）：模拟尾部资源挂起 2s——这正是 onload
+  // 门控白屏的场景。注：favicon 请求走浏览器进程、不经 page 级请求拦截，故改由
+  // evaluateOnNewDocument 的 MutationObserver 在 <body> 解析出时注入 /__hang.png
+  // 挂起图片（同属 load 事件必等资源），用 MutationObserver 记录首个格子出现时刻
+  // （禁用 __renderStartTs 这类实现内部计时），断言 firstGrid < loadTs。
+  const page3 = await browser.newPage();
+  await page3.evaluateOnNewDocument(() => {
+    window.__firstGridTs = null;
+    window.__loadTs = null;
+    window.__hangAdded = false;
+    const obs = new MutationObserver(() => {
+      if (!window.__hangAdded && document.body) {
+        window.__hangAdded = true;
+        const img = document.createElement('img');
+        img.src = '/__hang.png?ms=2000'; // 挂起 2s（旧代码此时一直白屏）
+        img.style.display = 'none';
+        document.body.appendChild(img);
+      }
+      const g = document.getElementById('grid-container');
+      if (window.__firstGridTs === null && g && g.children.length > 0) {
+        window.__firstGridTs = performance.now();
+      }
+    });
+    obs.observe(document, { childList: true, subtree: true });
+    window.addEventListener('load', () => { window.__loadTs = performance.now(); });
+  });
+  await page3.goto(BASE, { waitUntil: 'load' });
+  const gridVsLoad = await page3.evaluate(() => ({
+    first: window.__firstGridTs,
+    load: window.__loadTs,
+    hangAdded: window.__hangAdded,
+    gridCount: document.getElementById('grid-container').children.length,
+  }));
+  record('白屏优化① 格子出现早于 load 事件（尾部资源挂起 2s，MutationObserver 计时）',
+    gridVsLoad.hangAdded && gridVsLoad.first !== null && gridVsLoad.load !== null
+    && gridVsLoad.first < gridVsLoad.load && gridVsLoad.gridCount > 0,
+    'firstGrid=' + gridVsLoad.first + 'ms load=' + gridVsLoad.load + 'ms hangAdded=' + gridVsLoad.hangAdded + ' gridCount=' + gridVsLoad.gridCount);
+  await page3.close();
+
+  // 就绪前输入保留（P0-2 底线）：扣住全部 /js/* 请求（模块永不求值 = init 未跑），
+  // 在 DOM 已解析、模块未就绪的窗口内敲字——init 态①必须保留、照常渲染、入撤销栈、
+  // 触发保存链，绝不静默丢字；敲完再放行模块。注：本环境 puppeteer 的 goto 不支持
+  // waitUntil:'commit'，且 DCL 要等 deferred 模块执行完，故用「goto 不 await + 扣住
+  // 请求 + 轮询 evaluate」制造就绪前窗口。
+  const pageSlow = await browser.newPage();
+  const heldRequests = [];
+  await pageSlow.setRequestInterception(true);
+  pageSlow.on('request', (req) => {
+    if (req.url().includes('/js/')) { heldRequests.push(req); } // 扣住模块，init 不跑
+    else { req.continue(); }
+  });
+  const preReadyErrors = [];
+  pageSlow.on('pageerror', (e) => preReadyErrors.push(String(e)));
+  const navP = pageSlow.goto(BASE, { waitUntil: 'domcontentloaded' })
+    .catch(() => { /* DCL 等被扣住的模块，最终由放行后完成 */ });
+  let inputFound = false;
+  for (let i = 0; i < 200 && !inputFound; i++) {
+    try {
+      inputFound = await pageSlow.evaluate(() => document.getElementById('input-text') !== null);
+    } catch { /* 导航 commit 前执行上下文尚未就绪，重试 */ }
+    if (!inputFound) { await new Promise((r) => setTimeout(r, 25)); }
+  }
+  record('白屏优化③ 就绪前输入前提成立：DOM 已解析、模块仍被扣住（init 未跑）',
+    inputFound && heldRequests.length > 0,
+    'inputFound=' + inputFound + ' heldJs=' + heldRequests.length);
+  await pageSlow.evaluate(() => { document.getElementById('input-text').innerText = '就绪前输入保留测试'; });
+  for (const req of heldRequests) { req.continue(); } // 放行模块 → init 开跑
+  await navP;
+  await pageSlow.waitForFunction(() => window.__dtkReady === true, { timeout: 15000 });
+  await pageSlow.waitForFunction(() => {
+    const display = document.getElementById('count-display').textContent;
+    const m = display.match(/(\d+)/);
+    return m && parseInt(m[1], 10) === 9;
+  }, { timeout: 10000 });
+  const preReady = await pageSlow.evaluate(() => ({
+    text: document.getElementById('input-text').innerText,
+    saved: localStorage.getItem('savedText'),
+  }));
+  record('白屏优化③ 就绪前输入保留：文字与存档一致、计数=9（防静默丢字底线）',
+    preReady.text === '就绪前输入保留测试' && preReady.saved === '就绪前输入保留测试',
+    'text=' + JSON.stringify(preReady.text) + ' saved=' + JSON.stringify(preReady.saved));
+  record('白屏优化③ 就绪前输入场景无页面 JS 错误', preReadyErrors.length === 0,
+    preReadyErrors.slice(0, 2).join(' ; '));
+  // 撤销栈：就绪前输入经 distributeText 节流入栈（1 条记录，栈底），Ctrl+Z 不清空内容、给一次性栈底提示
+  await pageSlow.evaluate(() => new Promise((r) => setTimeout(r, 600))); // 等 400ms 节流入栈
+  const preReadyUndo = await pageSlow.evaluate(() => {
+    const el = document.getElementById('input-text');
+    el.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true, cancelable: true }));
+    const info = document.getElementById('info-message');
+    return {
+      text: el.innerText,
+      shown: info.classList.contains('show'),
+      hinted: !!localStorage.getItem('hint:undoBottom'),
+    };
+  });
+  record('白屏优化③ 就绪前输入入撤销栈：Ctrl+Z 到栈底给一次性提示、内容不被清空',
+    preReadyUndo.text === '就绪前输入保留测试' && preReadyUndo.shown && preReadyUndo.hinted,
+    'text=' + JSON.stringify(preReadyUndo.text) + ' shown=' + preReadyUndo.shown);
+  await pageSlow.close();
+
+  // 看门狗（优化④行为锁）：拦截 /js/* abort → 模块永不求值 → __dtkReady 永不置位
+  // → 10s 后横幅出现。顺序：先点「刷新重试」验证整页 reload（marker 被 navigation
+  // 清除即证明，禁止重新初始化）；reload 后新页面模块仍挂起 → 第二只横幅再等
+  // 10s 出现 → 验证可关闭（非阻断）。
+  const page4 = await browser.newPage();
+  await page4.setRequestInterception(true);
+  page4.on('request', (req) => {
+    if (req.url().includes('/js/')) { req.abort(); } else { req.continue(); }
+  });
+  await page4.goto(BASE, { waitUntil: 'domcontentloaded' });
+  await page4.waitForFunction(() => document.getElementById('module-timeout-banner') !== null, { timeout: 15000 });
+  const bannerCheck = await page4.evaluate(() => {
+    const b = document.getElementById('module-timeout-banner');
+    const buttons = Array.from(b.querySelectorAll('button'));
+    return {
+      exists: !!b,
+      hasRetry: buttons.some((x) => x.textContent === '刷新重试'),
+      hasClose: buttons.some((x) => x.getAttribute('aria-label') === '关闭提示'),
+      msg: b.textContent.includes('仍未就绪'),
+    };
+  });
+  await page4.evaluate(() => {
+    window.__wdTestMarker = 1;
+    const b = document.getElementById('module-timeout-banner');
+    const retry = Array.from(b.querySelectorAll('button')).find((x) => x.textContent === '刷新重试');
+    retry.click();
+  });
+  let reloaded = false;
+  try {
+    await page4.waitForFunction(() => !window.__wdTestMarker, { timeout: 8000 });
+    reloaded = true;
+  } catch { reloaded = false; }
+  record('白屏优化④ 看门狗横幅出现（文案/按钮齐备）+ 重试触发整页 reload（防监听器双份）',
+    bannerCheck.exists && bannerCheck.hasRetry && bannerCheck.hasClose && bannerCheck.msg && reloaded,
+    'exists=' + bannerCheck.exists + ' reloaded=' + reloaded);
+  // reload 后第二只横幅出现（新页面模块仍挂起）→ 验证非阻断可关闭
+  await page4.waitForFunction(() => document.getElementById('module-timeout-banner') !== null, { timeout: 15000 });
+  await page4.evaluate(() => {
+    const b = document.getElementById('module-timeout-banner');
+    const close = Array.from(b.querySelectorAll('button')).find((x) => x.getAttribute('aria-label') === '关闭提示');
+    close.click();
+  });
+  const bannerClosed = await page4.evaluate(() => document.getElementById('module-timeout-banner') === null);
+  record('白屏优化④ 看门狗横幅非阻断可关闭', bannerClosed, 'closed=' + bannerClosed);
+  await page4.close();
 
   // ---------- 页面无 JS 报错 ----------
   record('无页面 JS 运行错误', consoleErrors.length === 0, consoleErrors.slice(0, 3).join(' ; '));

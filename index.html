@@ -8,6 +8,52 @@
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline'; connect-src 'self' https://cloudflareinsights.com; img-src 'self' data:; base-uri 'self'; frame-ancestors 'self'">
   <meta name="description" content="申论/语文作文答题卡在线模拟：25 列格子纸所见即所得，支持标点禁则、字数统计、双击定位与打印导出。">
   <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <!-- 白屏优化②（20261015a）：5 个 ESM 模块 modulepreload，消除「HTML 全量到达才开始
+       抓模块 + punctuation-rules.js 还要等 engine.js 抓完」的两级串行瀑布。
+       href 与对应 import 的 URL（含 ?v=）query 逐字符一致、解析到同一地址；
+       punctuation-rules.js 不被本页直接 import，其 preload 与 js/engine.js 内部
+       import 指向同一 URL（test/version-sync.test.mjs ② 断言集合相等）。
+       不支持 rel=modulepreload 的老浏览器静默忽略、无报错，等价现状瀑布。 -->
+  <link rel="modulepreload" href="./js/engine.js?v=20261015a">
+  <link rel="modulepreload" href="./js/default-text.js?v=20261015a">
+  <link rel="modulepreload" href="./js/text-normalize.js?v=20261015a">
+  <link rel="modulepreload" href="./js/auto-format.js?v=20261015a">
+  <link rel="modulepreload" href="./js/punctuation-rules.js?v=20261015a">
+  <script>
+    // 白屏优化④（20261015a）：模块加载看门狗。P0 规避：必须是独立内联经典脚本
+    // （非 module）且放在 head——静态 import 任一模块挂起/失败时整个 module script
+    // 不求值，写在模块里的超时兜底根本不会执行（静态 import 失败不产生 promise
+    // rejection，unhandledrejection 兜不住）。就绪标志 window.__dtkReady 由内联
+    // module script 的模块体末尾（Object.assign 与 init 之后）设置，本脚本只读不写。
+    // 阈值 10 秒（≥10s：慢网络/风控挑战的合法加载可达 5 秒以上，过短会把「慢而
+    // 正常」误报成「加载失败」）；横幅非阻断、可关闭；模块晚到时由模块体负责隐藏
+    // （误报自愈）。重试只允许 location.reload()——重新初始化会挂双份监听器，
+    // 一次粘贴文本翻倍。依赖 CSP 的 'unsafe-inline'（与 _headers 同串，收紧 CSP
+    // 前必须先迁移本脚本）。打印态经 .module-timeout 入隐藏清单。
+    (function () {
+      setTimeout(function () {
+        if (window.__dtkReady) { return; }
+        var banner = document.createElement('div');
+        banner.id = 'module-timeout-banner';
+        banner.className = 'module-timeout';
+        var msg = document.createElement('span');
+        msg.textContent = '页面加载超过 10 秒仍未就绪，可能是网络波动。';
+        var retry = document.createElement('button');
+        retry.type = 'button';
+        retry.textContent = '刷新重试';
+        retry.onclick = function () { location.reload(); };
+        var close = document.createElement('button');
+        close.type = 'button';
+        close.setAttribute('aria-label', '关闭提示');
+        close.textContent = '×';
+        close.onclick = function () { banner.remove(); };
+        banner.appendChild(msg);
+        banner.appendChild(retry);
+        banner.appendChild(close);
+        document.body.appendChild(banner);
+      }, 10000);
+    })();
+  </script>
   <title>在线答题卡丨申论格子纸语文作文纸</title>
   <style>
     /* ---------- 1. 错误提示（轻量、淡入淡出） ---------- */
@@ -54,6 +100,33 @@
     .info-message.show {
       display: block;
       opacity: 1;
+    }
+
+    /* ---------- 1c. 模块加载超时横幅（白屏优化④配套样式；仅由看门狗经典脚本插入） ---------- */
+    .module-timeout {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      flex-wrap: wrap;
+      padding: 10px 14px;
+      border-radius: 0 6px 6px 0;
+      border-left: 4px solid #ff8f00;
+      margin: 10px auto;
+      max-width: 600px;
+      background-color: #fff8e1;
+      color: #5d4037;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+    .module-timeout button {
+      font-size: 14px;
+      padding: 4px 12px;
+      border: 1px solid #ff8f00;
+      border-radius: 4px;
+      background-color: #fff;
+      color: #5d4037;
+      cursor: pointer;
     }
 
     /* ---------- 8. 全局焦点样式 ---------- */
@@ -126,7 +199,7 @@
       @page { margin: 8mm; }
 
       .guide-title, .guide, .editable-div, .buttons, .adjust-buttons,
-      .error-message, .info-message, .mobile-hint, .size-buttons,
+      .error-message, .info-message, .module-timeout, .mobile-hint, .size-buttons,
       .count-target-group, .count-annotation {
         display: none !important;
       }
@@ -473,9 +546,21 @@
         <button class="btn-text" onclick="adjustFontSize(-1)">字小</button>
         <button class="btn-text" onclick="adjustFontSize(1)">字大</button>
       </div>
+      <!-- 白屏优化③（20261015a）：范文直接落 HTML，首屏（JS 就绪前）即可见 346 字内容。
+           本副本与 js/default-text.js 的 DEFAULT_TEXT 双源一致，由 test/version-sync.test.mjs ③
+           机器断言逐字相等。white-space: pre-wrap 原生渲染源码换行，不用 <br>；
+           编辑义务（详见 README 发版纪律）：改范文必须两处同步；源码内本副本各行
+           禁止缩进空格，首行紧跟开标签、末行紧贴 </div>；文本含 < > & 时须做实体
+           转义（测试按实体反转义归一后比对）。 -->
       <div id="input-text" class="editable-div" contenteditable="true"
            oninput="distributeTextWithDelay()" onkeydown="handleKeyDown(event)"
-           aria-label="文本输入区" aria-describedby="guide-desc" role="textbox"></div>
+           aria-label="文本输入区" aria-describedby="guide-desc" role="textbox">+6+以奋斗之姿 赴时代之约
++2+时代的浪潮奔涌向前，每一朵浪花都承载着无数奋斗者的梦想与汗水。站在新的历史节点上，我们既是见证者，更是参与者。唯有以奋斗为笔，以实干为墨，方能书写无愧于时代的青春华章。
++2+奋斗是青春最亮丽的底色。"青春须早为，岂能长少年。"古往今来，无数先辈以奋斗诠释生命的价值。
++2+一、坚定理想信念。理想信念是精神之"钙"，指引我们在迷茫中找到方向，在困厄中坚守初心。
++2+二、练就过硬本领。空谈误国，实干兴邦。我们要在学习中增长知识，在实践中锤炼能力。
++2+三、勇于担当作为。面对时代的考题，我们要敢于迎难而上，在攻坚克难中彰显青年担当。
++2+"自信人生二百年，会当水击三千里。"让我们以奋斗之姿，赴时代之约，在实现中华民族伟大复兴的征程中贡献青春力量！</div>
     </div>
     <div class="buttons">
       <button class="btn-secondary" id="btn-auto-format" onclick="autoFormat()">一键排版</button>
@@ -501,11 +586,13 @@
   </div>
   <script type="module">
     // ESM 收窄拆分（终局裁决 E）：排版引擎与规则表移入 js/，纯逻辑可被 Node import 测试。
-    // 引用带版本 query（?v=20261014f）防缓存错位；版本号须与 js/ 内文件同批更新。
-    import { GRID_COLUMNS_PER_ROW, computeGridContent, calculateEffectiveLength } from './js/engine.js?v=20261014f';
-    import { DEFAULT_TEXT } from './js/default-text.js?v=20261014f';
-    import { normalizeInputText } from './js/text-normalize.js?v=20261014f';
-    import { autoFormatText } from './js/auto-format.js?v=20261014f';
+    // 引用带版本 query（?v=）防缓存错位：全仓单一版本号，与 js/ 内引用、head 内
+    // modulepreload 同步更新，由 npm run bump（scripts/bump.mjs）一键批量替换，
+    // 并由 test/version-sync.test.mjs ①② 机器校验（全仓 ?v= 唯一且 == package.json version）。
+    import { GRID_COLUMNS_PER_ROW, computeGridContent, calculateEffectiveLength } from './js/engine.js?v=20261015a';
+    import { DEFAULT_TEXT } from './js/default-text.js?v=20261015a';
+    import { normalizeInputText } from './js/text-normalize.js?v=20261015a';
+    import { autoFormatText } from './js/auto-format.js?v=20261015a';
 
     const MAX_IMPORT_TEXT_LENGTH = 100000;
     let updateTimeout;
@@ -1223,7 +1310,13 @@
     }
     function cancelLongPress() { clearTimeout(longPressTimer); longPressStart = null; }
 
-    window.onload = function() {
+    // 白屏优化①（20261015a）：初始化从 window.onload 迁入模块求值路径。原来 onload
+    // 要等页面全部资源（favicon/beacon/风控脚本等尾部资源）load 完才跑，尾部资源
+    // 挂起时格子无限期不出现（白屏感）；ESM 串行瀑布由 head 的 modulepreload 消除。
+    // P0 规避：try/catch 包裹 init 保留（初始化失败必须可见，不能静默白屏）；
+    // 双 rAF 至少保留一层——innerText 在无头/隐藏态可能退化为 textContent 语义，
+    // 提前到模块求值期直读更易踩中，双 rAF 确保布局落定后再渲染。
+    function initApp() {
       try {
         loadCountTarget();
         let savedText = null;
@@ -1231,8 +1324,25 @@
         catch (e) { console.warn('无法读取本地存储:', e.message); }
         const inputTextDiv = document.getElementById('input-text');
         const defaultText = DEFAULT_TEXT;
-        if (savedText) { inputTextDiv.innerText = normalizeInputText(savedText); } // #11(3)：历史存档已带入的坏字符在恢复时清洗
-        else { inputTextDiv.innerText = defaultText; }
+        // 白屏优化③（20261015a）：范文已以字面静态文本落入 HTML，JS 就绪前用户即可
+        // 见/可编辑。init 按三态裁决（P0-2 底线：就绪前输入绝不静默丢字）：
+        // ① 当前 innerText 与内置范文逐字不一致且非空 → 用户在就绪前已输入，保留
+        //   原文、照常渲染、入撤销栈（distributeText 内节流入栈）、并触发保存链把
+        //   输入固化为存档；本态优先级最高，即便存在历史存档也不覆盖（本会话输入
+        //   是底线，存档随后会被保存链覆写）。
+        // ② 非空存档 → 恢复存档并 normalizeInputText 清洗（#11(3) 原语义不变）。
+        // ③ 无存档或存档为空串 → 走范文流程；显式重写一次（以 js/default-text.js
+        //   为源），HTML 副本仅负责 JS 就绪前的可见性，双源一致性由
+        //   test/version-sync.test.mjs ③ 机器断言。
+        const currentText = inputTextDiv.innerText;
+        let preserveUserInput = false;
+        if (currentText !== defaultText && currentText.trim() !== '') {
+          preserveUserInput = true;
+        } else if (savedText) {
+          inputTextDiv.innerText = normalizeInputText(savedText); // #11(3)：历史存档已带入的坏字符在恢复时清洗
+        } else {
+          inputTextDiv.innerText = defaultText;
+        }
         const gridContainer = document.getElementById('grid-container');
         inputTextDiv.addEventListener('focus', () => gridContainer.classList.add('focus-highlight'));
         inputTextDiv.addEventListener('blur', () => gridContainer.classList.remove('focus-highlight'));
@@ -1265,10 +1375,15 @@
           try { highlightDirectives(); } catch (e) { console.warn('高亮指令失败:', e.message); }
           requestAnimationFrame(() => {
             try { distributeText(); } catch (e) { console.warn('初始渲染失败:', e.message); }
+            // ①态：就绪前输入触发保存链——不等用户下一次输入，把本会话输入立即
+            // 固化为存档（防刷新丢失）；undo 栈由 distributeText 内节流入栈覆盖。
+            if (preserveUserInput) {
+              try { saveToLocalStorage(); } catch (e) { console.warn('初始保存失败:', e.message); }
+            }
           });
         });
       } catch (error) { showError(`加载失败: ${error.message}`); }
-    };
+    }
 
     function adjustTextarea(action) {
       try {
@@ -1354,7 +1469,9 @@
         countDisplay.classList.remove('over-target');
       }
     }
-    // ESM module 作用域内的函数挂到 window，保持既有内联事件处理器（onclick 等）零改动
+    // ESM module 作用域内的函数挂到 window，保持既有内联事件处理器（onclick 等）零改动。
+    // 白屏优化① P0 规避：Object.assign 前移到 initApp() 之前——隐私模式等
+    // localStorage 被禁的场景 init 仍会走完 catch 分支，此时内联按钮绝不能全部失效。
     Object.assign(window, {
       resetTextarea, adjustTextarea, adjustFontSize,
       distributeTextWithDelay, handleKeyDown, distributeText, highlightDirectives,
@@ -1363,6 +1480,21 @@
       undo, toggleAutoInput, downloadText, importText, updateCountTarget,
       printGrid
     });
+
+    // 白屏优化①（20261015a）：模块求值完成即初始化（替代 window.onload 门控）。
+    // P0 规避：try/catch 包裹 init（失败必须 showError，不得静默白屏）。
+    try {
+      initApp();
+    } catch (error) {
+      showError(`加载失败: ${error.message}`);
+    }
+
+    // 白屏优化④（20261015a）：模块就绪标志。必须位于模块体末尾（Object.assign 与
+    // init 之后）——head 内看门狗经典脚本据此判断；此处一到，立即移除可能已弹出的
+    // 超时横幅（误报自愈）。晚于本行仍可能异步执行（rAF 渲染等），但首屏依赖已解除。
+    window.__dtkReady = true;
+    const __timeoutBanner = document.getElementById('module-timeout-banner');
+    if (__timeoutBanner) { __timeoutBanner.remove(); }
   </script>
 </body>
 </html>

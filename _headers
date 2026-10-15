@@ -11,3 +11,20 @@
   Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline' https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline'; connect-src 'self' https://cloudflareinsights.com; img-src 'self' data:; base-uri 'self'; frame-ancestors 'self'
   X-Content-Type-Options: nosniff
   Referrer-Policy: strict-origin-when-cross-origin
+
+
+# 白屏优化⑤（20261015a）：js/ 模块走版本化 URL（?v= 全局单版本号），
+# 可安全一年强缓存（max-age=31536000, immutable）。Cloudflare Pages 规则叠加以
+# 逗号拼接，本块只加 Cache-Control，不重复其他 /* 头。
+#
+# ==== 缓存纪律（test/version-sync.test.mjs ④ 机器断言）====
+# 1. /* 块永远不得出现 Cache-Control——HTML 一旦强缓存，发版后用户拿到旧 HTML，
+#    旧 HTML 引用旧 js（immutable 缓存），新旧模块混血最长一年不可自愈。
+# 2. immutable 只允许出现在 /js/* 块——HTML 永不进 immutable。
+# 3. 回滚 = 前滚 bump：immutable 不可撤销，回滚必须发新版本号，把引用指回
+#    旧的（永不删除/改名的）js/ 历史文件。
+# 4. js/ 历史文件永不删除、永不改名（每个历史 ?v= 的模块都有被旧 HTML 引用的可能）。
+# 5. 版本变更走 npm run bump 一键替换（见 scripts/bump.mjs），禁止手工单改一处。
+
+/js/*
+  Cache-Control: public, max-age=31536000, immutable
