@@ -14,11 +14,11 @@
        punctuation-rules.js 不被本页直接 import，其 preload 与 js/engine.js 内部
        import 指向同一 URL（test/version-sync.test.mjs ② 断言集合相等）。
        不支持 rel=modulepreload 的老浏览器静默忽略、无报错，等价现状瀑布。 -->
-  <link rel="modulepreload" href="./js/engine.js?v=20261015a">
-  <link rel="modulepreload" href="./js/default-text.js?v=20261015a">
-  <link rel="modulepreload" href="./js/text-normalize.js?v=20261015a">
-  <link rel="modulepreload" href="./js/auto-format.js?v=20261015a">
-  <link rel="modulepreload" href="./js/punctuation-rules.js?v=20261015a">
+  <link rel="modulepreload" href="./js/engine.js?v=20261017a">
+  <link rel="modulepreload" href="./js/default-text.js?v=20261017a">
+  <link rel="modulepreload" href="./js/text-normalize.js?v=20261017a">
+  <link rel="modulepreload" href="./js/auto-format.js?v=20261017a">
+  <link rel="modulepreload" href="./js/punctuation-rules.js?v=20261017a">
   <script>
     // 白屏优化④（20261015a）：模块加载看门狗。P0 规避：必须是独立内联经典脚本
     // （非 module）且放在 head——静态 import 任一模块挂起/失败时整个 module script
@@ -589,10 +589,10 @@
     // 引用带版本 query（?v=）防缓存错位：全仓单一版本号，与 js/ 内引用、head 内
     // modulepreload 同步更新，由 npm run bump（scripts/bump.mjs）一键批量替换，
     // 并由 test/version-sync.test.mjs ①② 机器校验（全仓 ?v= 唯一且 == package.json version）。
-    import { GRID_COLUMNS_PER_ROW, computeGridContent, calculateEffectiveLength } from './js/engine.js?v=20261015a';
-    import { DEFAULT_TEXT } from './js/default-text.js?v=20261015a';
-    import { normalizeInputText } from './js/text-normalize.js?v=20261015a';
-    import { autoFormatText } from './js/auto-format.js?v=20261015a';
+    import { GRID_COLUMNS_PER_ROW, computeGridContent, calculateEffectiveLength } from './js/engine.js?v=20261017a';
+    import { DEFAULT_TEXT } from './js/default-text.js?v=20261017a';
+    import { normalizeInputText } from './js/text-normalize.js?v=20261017a';
+    import { autoFormatText } from './js/auto-format.js?v=20261017a';
 
     const MAX_IMPORT_TEXT_LENGTH = 100000;
     let updateTimeout;

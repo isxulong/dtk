@@ -1,8 +1,13 @@
 /**
  * text-normalize.js —— 输入边界归一化（纯逻辑，无 DOM 依赖，可被 Node 直接 import 测试）
- * 版本：20261015a
- * 归口条目：#11 BOM/零宽/控制字符/CR、Tab→+2+；#12 富文本粘贴取纯文本后归一化；
+ * 版本：20261017a
+ * 归口条目：#11 BOM/零宽/控制字符/CR、Tab 处理；#12 富文本粘贴取纯文本后归一化；
  *          #15 导入内容同链清洗；#3（终版改口径）emoji 与非书写符号的输入边界过滤。
+ *
+ * #11 Tab 口径修订（2026-10-17，主 AD 终裁 F3）：原口径「全局 Tab→+2+」会把
+ * 段中 Tab 注入成指令文本（正文里凭空出现 +2+）。修订为——仅行首 Tab 转 +2+
+ * （维持 Tab 键空 2 格语义）；行内 Tab 转单个半角空格，后续由 auto-format 的
+ * 语言邻接规则决定删/留（正文中涉 CJK 即删）。
  *
  * 接入边界（不进 distributeText 主路径，避免逐键改写扰动光标）：
  *   ① paste 拦截器  ② importText 的 reader.onload  ③ window.onload 恢复存档
@@ -10,7 +15,7 @@
  * sourceIndex / 双击定位 / 计数因此与「剥离后的纯文本」完全一致。
  */
 
-// #11：不可见控制符（\n 保留、\t 已在前一步转 +2+ 指令）：
+// #11：不可见控制符（\n 保留；\t 已在前两步处理——行首转 +2+ 指令、行内转半角空格）：
 // \x00-\x08、\x0B、\x0C、\x0E-\x1F（C0 其余成员）、\x7F（DEL）
 const CONTROL_CHARS = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g;
 
@@ -38,7 +43,8 @@ export function normalizeInputText(raw) {
     .replace(/^\uFEFF/, '')                 // #11：文件头 BOM
     .replace(/[\uFEFF\u200B\u2060]/g, '')   // #11：正文内 BOM / 零宽空格 / 词连接符
     .replace(/\r\n?/g, '\n')                // #11：CRLF/CR 行尾归一（隐性格主源）
-    .replace(/\t/g, '+2+')                  // #11：Tab → 空 2 格指令（与 Tab 键语义对齐）
+    .replace(/^\t+/gm, (m) => '+2+'.repeat(m.length)) // #11（2026-10-17 修订）：仅行首 Tab → 空 2 格指令（与 Tab 键语义对齐）
+    .replace(/\t/g, ' ')                    // #11（2026-10-17 修订）：行内 Tab → 单个半角空格（不再注入指令文本）
     .replace(CONTROL_CHARS, '')             // #11：其余不可见控制符
     .replace(EMOJI_ASTRAL, '')              // #3：U+1F000+ 表情区（代理对整体剥离）
     .replace(EMOJI_BMP, '')                 // #3：BMP emoji 呈现区

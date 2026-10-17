@@ -1,6 +1,6 @@
 /**
  * auto-format.js —— 一键排版（纯逻辑，无 DOM 依赖，可被 Node 直接 import 测试）
- * 版本：20261015a
+ * 版本：20261017a
  *
  * 定位：text-normalize.js（字符级卫生，输入边界静默执行）之上的「结构级改写」层，
  * 由用户显式点击「一键排版」触发，改动经 stats 反馈给用户。两层的关注点与触发
@@ -9,12 +9,18 @@
  * 五阶段确定性流水线（无随机、无 LLM，O(n)）：
  *   S1 行级空白清理：行尾删；行首 2+ 空白视为缩进意图转指令；行内按语言邻接
  *      规则删/留（两侧均 ASCII 可打印字符→保留单个半角空格，否则删除）。
- *      豁免：段首已有 +N+ 的行（已排版，R11）与判为标题的首行（R10）。
+ *      豁免收窄（2026-10-17 主 AD 终裁 F1/F2，修复「豁身份连内容一起豁」）：
+ *      R11 段首 +N+ 指令行——仅豁免指令 token 本身（数值不动），指令之后的
+ *      内容区照常清理；R10 标题行——维持不注入 +2+ 缩进，但行内任意连续空白
+ *      折叠为单个半角空格（不删除，用户口径「一个空格正常」），折叠后再计算
+ *      有效格数与 titlePad（顺带修掉用脏文本算格数导致的居中偏移）。
  *   S2 段落结构整理：连续空行折叠为单换行；去文首/文末空白行。
  *   S3 +N+ 注入：段首无指令的正文段统一补 +2+；已有指令不动（幂等关键）。
  *   S4 首段标题判定：9 特征加权评分（宁漏判不误判），判中按
  *      pad = clamp(⌊(25−有效格数)/2⌋, 2, 10) 注入居中指令；判不中回落 +2+。
- *   S5 输出 { text, stats }。
+ *      首行带指令时不重复注入，但内容评分仍用于决定 S1b 清理口径（标题折叠
+ *      vs 正文邻接）。
+ *   S5 输出 { text, stats }。stats.spaces 只计内容区清理数，指令前缀不计入（F4）。
  *
  * 明确不处理（保守原则）：半角→全角标点转换、PDF 句中硬换行合并（本版只检测
  * 提示）、段尾补标点、已有 +N+ 数值调整、弯直引号互转。
@@ -24,8 +30,8 @@
  *   ② 幂等——autoFormatText(autoFormatText(x)).text === autoFormatText(x).text。
  */
 
-import { normalizeInputText } from './text-normalize.js?v=20261015a';
-import { GRID_COLUMNS_PER_ROW, calculateEffectiveLength } from './engine.js?v=20261015a';
+import { normalizeInputText } from './text-normalize.js?v=20261017a';
+import { GRID_COLUMNS_PER_ROW, calculateEffectiveLength } from './engine.js?v=20261017a';
 
 /** 行内空白字符类：半角空格 / 全角空格 / 不间断空格 */
 const INLINE_WS = '[ \\u3000\\u00A0]';
@@ -62,7 +68,9 @@ function isAsciiPrintable(ch) {
  *      ⑥第 2 段 ≥30 字符 ⑦次行长度 ≥2 倍首行 ⑧后随空行 ⑨首段无 +N+（门控）。
  * 强否定特征给大负分，弱相关特征只加不减——判不中回落 +2+，代价恒为用户手动调一行。
  *
- * @param {string} firstLine S1 清理后的首段文本（不含行首行尾空白）
+ * @param {string} firstLine S1 清理后的首段文本（不含行首行尾空白；
+ *   2026-10-17 起由调用方先按 F1 折叠口径规范化行内空白再传入，
+ *   有效格数与 titlePad 因此基于折叠后文本计算）
  * @param {string[]} followingLines 其后的非空行（S1 清理后）
  * @param {boolean} blankLineFollows 原始结构中首段后是否有空行分隔
  * @returns {{ verdict: 'detected'|'uncertain'|'none', score: number, maxScore: number,
@@ -123,6 +131,22 @@ function cleanInlineSpaces(line) {
 }
 
 /**
+ * 标题行空白折叠（F1）：任意连续空白 run（半角/全角/NBSP 及混合）折叠为
+ * 单个半角空格——不删除，用户口径「一个空格正常」。Tab 在上游
+ * text-normalize.js 已按 F3 转为空格（行内）或 +2+（行首），此处不会遇到。
+ * @returns {{ line: string, changed: number }} changed = 被折叠的空白 run 数
+ *   （run 本身就是单个半角空格时不计）
+ */
+function collapseTitleSpaces(content) {
+  let changed = 0;
+  const out = content.replace(INLINE_WS_RUN_RE, (run) => {
+    if (run !== ' ') { changed++; }
+    return ' ';
+  });
+  return { line: out, changed };
+}
+
+/**
  * 一键排版主入口。
  * @param {string} raw 输入框当前文本
  * @returns {{ text: string, stats: {
@@ -155,26 +179,46 @@ export function autoFormatText(raw) {
     return s;
   });
 
-  // ---- S4 标题判定（先于行内清理：标题行豁免清理，且需要原始空行结构特征⑧） ----
+  // ---- S4 标题判定（先于行内清理：需要原始空行结构特征⑧）----
+  // F1：首行内容先按标题折叠口径规范化，再评分——有效格数与 titlePad 基于
+  // 折叠后文本计算（修掉用脏文本算格数导致的居中偏移）。首行带 +N+ 指令时
+  // （二次排版/用户手排）不重复注入，stats.title 维持 none；但内容评分仍保留，
+  // 供 S1b 决定该行按标题折叠口径还是正文邻接口径清理（F2「若该行是标题行」）。
   const firstIdx = lines.findIndex((l) => l !== '');
   let titleInfo = { verdict: 'none', score: 0, maxScore: 13, threshold: TITLE_THRESHOLD, effectiveLength: 0 };
+  let firstContentScore = { verdict: 'none' };
+  let firstContentCollapsed = { line: '', changed: 0 };
   if (firstIdx >= 0) {
+    const directive = lines[firstIdx].match(LEADING_DIRECTIVE_RE);
+    const rawContent = lines[firstIdx].slice(directive ? directive[0].length : 0);
+    firstContentCollapsed = collapseTitleSpaces(rawContent);
     const rest = lines.slice(firstIdx + 1).filter((l) => l !== '');
     const blankLineFollows = lines.slice(firstIdx + 1).length > rest.length;
-    titleInfo = scoreTitle(lines[firstIdx], rest, blankLineFollows);
-    stats.title = titleInfo.verdict;
-    stats.titleScore = titleInfo.score;
-    stats.titleMaxScore = titleInfo.maxScore;
-    stats.titleThreshold = titleInfo.threshold;
+    firstContentScore = scoreTitle(firstContentCollapsed.line, rest, blankLineFollows);
+    if (!directive) {
+      titleInfo = firstContentScore;
+      stats.title = titleInfo.verdict;
+      stats.titleScore = titleInfo.score;
+      stats.titleMaxScore = titleInfo.maxScore;
+      stats.titleThreshold = titleInfo.threshold;
+    }
   }
 
-  // ---- S1b 行内空格清理（豁免：段首已有 +N+ 的行、判为标题的首行） ----
+  // ---- S1b 行内空白清理（F1/F2 收窄版：剥离指令前缀 → 清理内容 → 拼回） ----
+  // 指令 token 原样保留（数值不动，F2）；清理只作用于内容区，stats.spaces
+  // 因此不含指令前缀（F4）。标题行（首行内容判中，含已居中的二次排版标题）
+  // 按 F1 折叠口径；其余行按既有语言邻接规则。
   for (let i = 0; i < lines.length; i++) {
     if (lines[i] === '') { continue; }
-    if (LEADING_DIRECTIVE_RE.test(lines[i])) { continue; }              // R11：已排版
-    if (i === firstIdx && titleInfo.verdict === 'detected') { continue; } // R10：标题豁免
-    const { line, changed } = cleanInlineSpaces(lines[i]);
-    lines[i] = line;
+    const m = lines[i].match(LEADING_DIRECTIVE_RE);
+    const prefix = m ? m[0] : '';
+    if (i === firstIdx && firstContentScore.verdict === 'detected') {
+      lines[i] = prefix + firstContentCollapsed.line;                    // R10：标题折叠（F1）
+      stats.spaces += firstContentCollapsed.changed;
+      continue;
+    }
+    const { line, changed } = cleanInlineSpaces(lines[i].slice(prefix.length));
+    lines[i] = prefix + line;                                            // R11：仅豁指令（F2）
     stats.spaces += changed;
   }
 

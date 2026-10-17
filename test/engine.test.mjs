@@ -373,8 +373,19 @@ test('#11 normalize：CRLF 与孤立 CR 统一为 LF', () => {
   assert.equal(normalizeInputText('第一段\r\n第二段\r末段'), '第一段\n第二段\n末段');
 });
 
-test('#11 normalize：Tab 转 +2+ 指令（与 Tab 键语义对齐）', () => {
-  assert.equal(normalizeInputText('段首\t正文'), '段首+2+正文');
+// F3 修订（2026-10-17，主 AD 终裁）：原用例断言「段首\t正文 → 段首+2+正文」，
+// 即全局 Tab→+2+；该口径会把段中 Tab 注入成指令文本。修订为仅行首 Tab 转 +2+、
+// 行内 Tab 转单个半角空格，本组用例按新口径重写。
+test('#11 normalize：行首 Tab 转 +2+ 指令（与 Tab 键空 2 格语义对齐，F3 防回归）', () => {
+  assert.equal(normalizeInputText('\t段首正文'), '+2+段首正文');
+  assert.equal(normalizeInputText('第一行\n\t第二行正文'), '第一行\n+2+第二行正文');
+  assert.equal(normalizeInputText('\t\t段首正文'), '+2++2+段首正文', '连续行首 Tab 各转一个 +2+');
+});
+
+test('#11 normalize：行内 Tab 转单个半角空格（F3：不再注入指令文本）', () => {
+  assert.equal(normalizeInputText('段中\t正文'), '段中 正文');
+  assert.equal(normalizeInputText('奋斗\t青春'), '奋斗 青春');
+  assert.ok(!normalizeInputText('段中\t正文').includes('+2+'), '段中 Tab 不得注入指令');
 });
 
 test('#11 normalize：C0 控制符与 DEL 剥离（\\n 保留）', () => {
